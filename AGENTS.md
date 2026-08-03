@@ -32,7 +32,7 @@ Five pillars under `src/flowmaticdb/`:
 - **`adapters/`** — Connection wrappers (`SQLiteAdapter`, `PsycopgAdapter`).
 - **`query/`** — Fluent query builders (`SelectQuery`, `InsertQuery`, `UpdateQuery`, `DeleteQuery`, `CreateTableQuery`, `AlterTableQuery`, `DropTableQuery`). Mixins: `WhereMixin`, `HavingMixin`, `JoinsMixin`, etc.
 - **`result/`** — Result set abstraction (`Result`, `SQLite3Result`, `PsycopgResult`). Methods: `fetch_dict()`, `fetch_dicts()`, `scalar()`, `fetch_object()`, `fetch_objects()`, `columns()`.
-- **`migrations/`** — Schema migrations. Subclass `MigrationABC` (`up()`/`down()` abstract, `in_transaction()` returns `True` by default). `Migrator(db, migrations_dir, migrations_table="migrations")` drives them: `init()`, `up()`, `down()`, `create(name)`.
+- **`migrations/`** — Schema migrations. Subclass `MigrationABC` (`up(db)`/`down(db)` abstract — the `DB` is passed in, not stored on the instance; `in_transaction()` returns `True` by default). `Migrator(db, migrations_dir, migrations_table="migrations")` drives them: `init()`, `up()`, `down()`, `create(name)`.
 
 User-facing facade: `from flowmaticdb.database import DB`
 

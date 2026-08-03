@@ -4,14 +4,19 @@ import re
 
 MIGRATION_TEMPLATE: str = """from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 from flowmaticdb.migrations import MigrationABC
+
+if TYPE_CHECKING:
+    from flowmaticdb.database import DB
 
 
 class {class_name}(MigrationABC):
-    def up(self) -> None:
+    def up(self, db: DB) -> None:
         \"\"\"Apply the change\"\"\"
 
-    def down(self) -> None:
+    def down(self, db: DB) -> None:
         \"\"\"Revert the change\"\"\"
 """
 

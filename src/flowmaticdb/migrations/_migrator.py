@@ -39,10 +39,10 @@ class Migrator:
         batch = self._current_batch() + 1
 
         for filename in pending:
-            migration = load_migration(self._migrations_dir, filename, self._db)
+            migration = load_migration(self._migrations_dir, filename)
 
-            def action(migration: MigrationABC = migration, filename: str = filename) -> None:
-                migration.up()
+            def action(db: DB, migration: MigrationABC = migration, filename: str = filename) -> None:
+                migration.up(db)
                 self._insert_record(filename, batch)
 
             self._run(migration, action)
@@ -62,10 +62,10 @@ class Migrator:
         filenames = sorted((row["filename"] for row in rows), reverse=True)
 
         for filename in filenames:
-            migration = load_migration(self._migrations_dir, filename, self._db)
+            migration = load_migration(self._migrations_dir, filename)
 
-            def action(migration: MigrationABC = migration, filename: str = filename) -> None:
-                migration.down()
+            def action(db: DB, migration: MigrationABC = migration, filename: str = filename) -> None:
+                migration.down(db)
                 self._db.delete(self._migrations_table).where_equals("filename", filename).execute()
 
             self._run(migration, action)
@@ -95,8 +95,8 @@ class Migrator:
             }
         ).execute()
 
-    def _run(self, migration: MigrationABC, action: Callable[[], None]) -> None:
+    def _run(self, migration: MigrationABC, action: Callable[[DB], None]) -> None:
         if migration.in_transaction():
-            self._db.transaction(lambda _db: action())
+            self._db.transaction(action)
         else:
-            action()
+            action(self._db)

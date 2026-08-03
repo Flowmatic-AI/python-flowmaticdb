@@ -1,20 +1,19 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+from typing import TYPE_CHECKING
 
-from flowmaticdb.database import DB
+if TYPE_CHECKING:
+    from flowmaticdb.database import DB
 
 
 class MigrationABC(ABC):
-    def __init__(self, db: DB) -> None:
-        self.db = db
-
     @abstractmethod
-    def up(self) -> None:
+    def up(self, db: DB) -> None:
         """Apply the change"""
 
     @abstractmethod
-    def down(self) -> None:
+    def down(self, db: DB) -> None:
         """Revert the change"""
 
     def in_transaction(self) -> bool:

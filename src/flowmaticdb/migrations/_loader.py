@@ -2,13 +2,9 @@ from __future__ import annotations
 
 import importlib.util
 import os
-from typing import TYPE_CHECKING
 
 from flowmaticdb.exceptions import DatabaseError
 from flowmaticdb.migrations._migration_abc import MigrationABC
-
-if TYPE_CHECKING:
-    from flowmaticdb.database import DB
 
 
 def discover_migration_files(migrations_dir: str) -> list[str]:
@@ -28,7 +24,7 @@ def discover_migration_files(migrations_dir: str) -> list[str]:
     return sorted(filenames)
 
 
-def load_migration(migrations_dir: str, filename: str, db: DB) -> MigrationABC:
+def load_migration(migrations_dir: str, filename: str) -> MigrationABC:
     """Import the module by absolute path and return an instance of its MigrationABC subclass."""
 
     path = os.path.join(migrations_dir, filename)
@@ -59,4 +55,4 @@ def load_migration(migrations_dir: str, filename: str, db: DB) -> MigrationABC:
 
     migration_class = migration_classes[0]
 
-    return migration_class(db)
+    return migration_class()
