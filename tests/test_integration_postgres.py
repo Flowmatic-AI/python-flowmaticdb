@@ -19,12 +19,12 @@ from typing import Any
 
 import pytest
 
-from flowmaticdb._helpers import expression, identifier, raw
 from flowmaticdb._query_with_params import QueryWithParams
 from flowmaticdb.adapters._base import AdapterABC
 from flowmaticdb.adapters._postgres import PsycopgAdapter
 from flowmaticdb.database import DB
 from flowmaticdb.dialects._postgres import PostgresqlDialect
+from flowmaticdb.helpers import expression, identifier, raw
 from flowmaticdb.query._alter_table import AlterTableQuery
 from flowmaticdb.query._condition import Condition
 from flowmaticdb.query._create_table import CreateTableQuery

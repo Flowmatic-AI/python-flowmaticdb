@@ -481,7 +481,7 @@ def test_mysql_joins(
     # --- RIGHT JOIN (via raw join expression; JoinEnum has no RIGHT) --------
     # ``JoinsMixin.join()`` accepts a ``SqlABC`` expression, so wrap the raw
     # SQL in ``raw(...)`` — a bare string would be silently ignored.
-    from flowmaticdb._helpers import raw as raw_expr
+    from flowmaticdb.helpers import raw as raw_expr
 
     q3: SelectQuery = SelectQuery(dialect, "users")
     q3.columns(["name", "title"])
@@ -1109,7 +1109,7 @@ def test_mysql_giant_select(
     # so the dialect emits `` `t`.`col` `` rather than treating ``"t.col"`` as
     # a single (non-existent) identifier.  Aggregate expressions use ``raw()``
     # since the fluent API has no first-class aggregate builder.
-    from flowmaticdb._helpers import identifier, raw
+    from flowmaticdb.helpers import identifier, raw
 
     q: SelectQuery = SelectQuery(dialect, "users")
     q.columns(

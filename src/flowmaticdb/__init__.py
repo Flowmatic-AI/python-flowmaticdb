@@ -1,4 +1,6 @@
-from flowmaticdb._helpers import (
+from flowmaticdb._query_with_params import QueryWithParams
+from flowmaticdb.exceptions import AdapterError, DatabaseError, DriverError, QueryError, QueryWithParamsError
+from flowmaticdb.helpers import (
     alias,
     current_timestamp,
     expression,
@@ -7,8 +9,6 @@ from flowmaticdb._helpers import (
     raw,
     sub_query,
 )
-from flowmaticdb._query_with_params import QueryWithParams
-from flowmaticdb.exceptions import AdapterError, DatabaseError, DriverError, QueryError, QueryWithParamsError
 
 __all__ = [
     "AdapterError",
