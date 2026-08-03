@@ -31,9 +31,9 @@ classifiers = [
 dependencies = []
 
 [project.urls]
-Homepage = "https://github.com/Flowmatic-AI/python-prototyping-db"
-Repository = "https://github.com/Flowmatic-AI/python-prototyping-db"
-Issues = "https://github.com/Flowmatic-AI/python-prototyping-db/issues"
+Homepage = "https://github.com/Flowmatic-AI/python-flowmaticdb"
+Repository = "https://github.com/Flowmatic-AI/python-flowmaticdb"
+Issues = "https://github.com/Flowmatic-AI/python-flowmaticdb/issues"
 
 [project.optional-dependencies]
 postgres = [
