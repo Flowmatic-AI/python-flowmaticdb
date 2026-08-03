@@ -1,0 +1,65 @@
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "flowmaticdb"
+version = "1.0.1"
+description = "A Python database abstraction layer supporting PostgreSQL, SQLite, and MySQL."
+readme = "README.md"
+requires-python = ">=3.11"
+license = {text = "MIT"}
+keywords = ["database", "abstraction", "sql", "postgresql", "sqlite", "mysql"]
+
+authors = [
+    {name = "Flowmatic"},
+    {name = "UniForceMusic"},
+]
+
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Database",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+]
+
+dependencies = []
+
+[project.urls]
+Homepage = "https://github.com/Flowmatic-AI/python-prototyping-db"
+Repository = "https://github.com/Flowmatic-AI/python-prototyping-db"
+Issues = "https://github.com/Flowmatic-AI/python-prototyping-db/issues"
+
+[project.optional-dependencies]
+postgres = [
+    "psycopg[binary]>=3.1",
+]
+mysql = [
+    "mysql-connector-python>=9.0",
+]
+dev = [
+    "pytest>=7.0",
+    "mypy>=1.0",
+    "ruff>=0.1",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+
+[tool.mypy]
+strict = true
+python_version = "3.11"
+ignore_missing_imports = true
+
+[tool.ruff]
+target-version = "py311"
+line-length = 120

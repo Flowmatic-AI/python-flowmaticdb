@@ -1,0 +1,27 @@
+from __future__ import annotations
+
+from typing import TYPE_CHECKING, Any
+
+from flowmaticdb.query.expressions._sql import SqlABC
+
+if TYPE_CHECKING:
+    from flowmaticdb.dialects._base import DialectABC
+    from flowmaticdb.query._select import SelectQuery
+
+
+class SubQuery(SqlABC):
+    def __init__(self, query: SelectQuery, alias: str) -> None:
+        self._query = query
+        self._alias = alias
+
+    def sql(self, dialect: DialectABC) -> str:
+        qwp = self._query.to_query_with_params()
+        return f"({qwp.query}) AS {dialect.escape_identifier(self._alias)}"
+
+    def params(self, dialect: DialectABC) -> list[Any]:
+        qwp = self._query.to_query_with_params()
+        return list(qwp.params)
+
+    def raw_sql(self, dialect: DialectABC) -> str:
+        qwp = self._query.to_query_with_params()
+        return f"({qwp.to_sql(dialect)}) AS {dialect.escape_identifier(self._alias)}"
