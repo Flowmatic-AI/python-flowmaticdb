@@ -44,5 +44,5 @@ def current_timestamp() -> CurrentTimestamp:
     return CurrentTimestamp()
 
 
-def now() -> datetime:
-    return datetime.now(UTC)
+def now() -> CurrentTimestamp:
+    return current_timestamp()
