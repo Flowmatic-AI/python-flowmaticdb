@@ -1,16 +1,31 @@
 from __future__ import annotations
 
-from datetime import UTC
-from typing import Any
+import dataclasses
+import re
+from collections.abc import Mapping
+from typing import Any, ClassVar
 
 from flowmaticdb.dialects._sql_dialect import SQLDialect
-from flowmaticdb.query._condition import Condition
-from flowmaticdb.query._on_conflict import OnConflict
-from flowmaticdb.query.enums._type import TypeEnum
-from flowmaticdb.query.expressions._sql import SqlABC
+from flowmaticdb.query import Condition, OnConflict
+from flowmaticdb.query.ddl import Column
+from flowmaticdb.query.enums import ConditionEnum, TypeEnum
+
+_TZ_OFFSET_RE = re.compile(r"([+-]\d{2})$")
 
 
 class PostgresqlDialect(SQLDialect):
+    escape_chars: ClassVar[Mapping[str, str]] = {
+        "\\": "\\\\",
+        "\n": "\\n",
+        "\r": "\\r",
+        "\t": "\\t",
+        "\0": "",
+        "\b": "\\b",
+        "\x1a": "\\x1A",
+        "\f": "\\f",
+        "\v": "\\v",
+    }
+
     def __init__(self, version: str = "16", options: dict[str, Any] | None = None) -> None:
         super().__init__(version=version, options=options)
         self.bool = True
@@ -26,7 +41,7 @@ class PostgresqlDialect(SQLDialect):
         self.distinct_on = v >= 70200
         self.lateral = v >= 90300
         self.on_conflict = v >= 90500
-        self.generated_by_default_as_identity = v >= 100000
+        self.generated_by_default_as_identity = v >= 170000
         self.returning = v >= 80200
 
     def _build_on_conflict(
@@ -54,38 +69,45 @@ class PostgresqlDialect(SQLDialect):
 
         return ""
 
-    def _build_returning(self, query: list[str], returning: list[str] | None) -> None:
-        if returning is not None and returning:
-            query.append(" RETURNING " + ", ".join(self.escape_identifier(c) for c in returning))
-
-    def _build_condition_like(self, query: list[str], params: list[Any], cond: Any) -> None:
-        if isinstance(cond.identifier, SqlABC):
-            query.append(cond.identifier.raw_sql(self))
+    def _build_condition_like(self, query: list[str], params: list[Any], cond: Condition) -> None:
+        identifier_sql = self._escape_or_sql(cond.identifier)
+        if cond.condition == ConditionEnum.LIKE:
+            operator = "ILIKE" if cond.case_insensitive else "LIKE"
         else:
-            query.append(self.escape_identifier(str(cond.identifier)))
-        is_not = cond.condition.value.startswith("NOT ")
-        if self._version >= 80400:
-            query.append(f" {'NOT ' if is_not else ''}ILIKE ")
-        else:
-            query.append(f" {'NOT ' if is_not else ''}LIKE ")
+            operator = "NOT ILIKE" if cond.case_insensitive else "NOT LIKE"
+        query.append(f"{identifier_sql} {operator} ")
         self._build_question_marks(query, params, cond.value)
 
     def _build_condition_regex(self, query: list[str], params: list[Any], cond: Condition) -> None:
-        is_not = str(cond.condition).startswith("NOT ")
-        neg = "!" if is_not else ""
-
-        if isinstance(cond.identifier, SqlABC):
-            query.append(cond.identifier.raw_sql(self))
-        else:
-            query.append(self.escape_identifier(str(cond.identifier)))
-
         use_tilde = self.option("use_tilde_regex", False)
-        if not use_tilde and self._version >= 150000:
-            query.append(f" {neg}~ ")
-            self._build_question_marks(query, params, cond.value)
+        if self._version >= 150000 and not use_tilde:
+            super()._build_condition_regex(query, params, cond)
+            return
+
+        self._build_condition_regex_operator(query, params, cond, "~", "!~")
+
+    def _build_column(self, col: Column) -> str:
+        if not col.auto_increment:
+            return super()._build_column(col)
+
+        if self.generated_by_default_as_identity and not self.option("use_serials", False):
+            return super()._build_column(col)
+
+        sql_type = col.type
+        if isinstance(sql_type, TypeEnum):
+            sql_type = self.type(sql_type, col.bits)
+
+        type_is_uppercase = any(ch.isupper() for ch in sql_type)
+        upper_type = sql_type.upper()
+        if upper_type in ("SMALLINT", "INTEGER", "INT", "INT2", "INT4"):
+            serial_type = "SERIAL" if type_is_uppercase else "serial"
+        elif upper_type in ("BIGINT", "INT8"):
+            serial_type = "BIGSERIAL" if type_is_uppercase else "bigserial"
         else:
-            query.append(f" {neg}~ ")
-            self._build_question_marks(query, params, cond.value)
+            serial_type = sql_type
+
+        serial_col = dataclasses.replace(col, type=serial_type, auto_increment=False)
+        return super()._build_column(serial_col)
 
     def cast_to_query(self, value: Any) -> str:
         if isinstance(value, bool):
@@ -96,42 +118,15 @@ class PostgresqlDialect(SQLDialect):
     def cast_bool(self, value: bool) -> bool | int:
         return value
 
-    def parse_bool(self, value: Any) -> bool:
-        if isinstance(value, bool):
-            return value
-        if isinstance(value, int):
-            return value != 0
-        if isinstance(value, str):
-            return value.lower() in ("true", "1", "t", "yes", "on")
-        return bool(value)
-
     def parse_datetime(self, value: Any) -> Any:
-        from datetime import datetime
-        if isinstance(value, datetime):
-            return value
         if isinstance(value, str):
-            import re
-            fixed = re.sub(r'([+-]\d{2})$', r'\1:00', value)
-            try:
-                return datetime.strptime(fixed, self.datetime_format).replace(tzinfo=UTC)
-            except ValueError:
-                try:
-                    return datetime.fromisoformat(fixed)
-                except ValueError:
-                    return value
-        return value
-
-    def escape_string(self, string: str) -> str:
-        result = string.replace("'", "''")
-        result = result.replace("\\", "\\\\")
-        return result
+            value = _TZ_OFFSET_RE.sub(r"\1:00", value)
+        return super().parse_datetime(value)
 
     def type(self, type_enum: TypeEnum, bits: int | None = None) -> str:
-        mapping = {
-            TypeEnum.BOOL: "BOOLEAN",
-            TypeEnum.INT: "INTEGER",
-            TypeEnum.FLOAT: "DOUBLE PRECISION" if (bits or 0) > 32 else "REAL",
-            TypeEnum.STRING: f"VARCHAR({bits or 255})",
-            TypeEnum.DATETIME: "TIMESTAMP",
-        }
-        return mapping.get(type_enum, "VARCHAR(255)")
+        size = bits or 0
+        if type_enum == TypeEnum.FLOAT:
+            return "DOUBLE PRECISION" if size > 32 else "REAL"
+        if type_enum == TypeEnum.DATETIME:
+            return "TIMESTAMP"
+        return super().type(type_enum, bits)

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import os
 from collections.abc import Callable
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
 from flowmaticdb.migrations._loader import discover_migration_files, load_migration
@@ -71,7 +71,8 @@ class Migrator:
             self._run(migration, action)
 
     def create(self, name: str) -> str:
-        filename = f"{datetime.now().strftime('%Y%m%d%H%M%S')}_{name}.py"  # noqa: DTZ005
+        now = datetime.now(UTC).astimezone()
+        filename = f"{now.strftime('%Y%m%d%H%M%S')}_{name}.py"
 
         os.makedirs(self._migrations_dir, exist_ok=True)
 
@@ -91,7 +92,7 @@ class Migrator:
             {
                 "filename": filename,
                 "batch": batch,
-                "applied_at": datetime.now(),  # noqa: DTZ005
+                "applied_at": datetime.now(UTC).astimezone(),
             }
         ).execute()
 

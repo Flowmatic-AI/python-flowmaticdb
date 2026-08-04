@@ -24,31 +24,30 @@ from typing import Any, cast
 
 import pytest
 
-from flowmaticdb._query_with_params import QueryWithParams
-from flowmaticdb.adapters._mysql import MySQLAdapter
+from flowmaticdb import QueryWithParams
+from flowmaticdb.adapters import MySQLAdapter
 from flowmaticdb.database import DB
-from flowmaticdb.dialects._mysql import MySQLDialect
-from flowmaticdb.query._on_conflict import OnConflict
-from flowmaticdb.query._select import SelectQuery
-from flowmaticdb.query.enums._type import TypeEnum
-from flowmaticdb.result._base import ResultABC
+from flowmaticdb.dialects import MySQLDialect
+from flowmaticdb.query import OnConflict, SelectQuery
+from flowmaticdb.query.ddl import (
+    AddColumn,
+    AddForeignKeyConstraint,
+    AddUniqueConstraint,
+    AlterColumn,
+    Column,
+    DropColumn,
+    ForeignKeyConstraint,
+    RenameColumn,
+    UniqueConstraint,
+)
+from flowmaticdb.query.enums import TypeEnum
+from flowmaticdb.result import ResultABC
 
-# ---------------------------------------------------------------------------
-# Connection constants — match the Docker service described in the module
-# docstring.  All tests share the same server; the ``flowmaticdb`` database is
-# created lazily by the session-scoped fixture below.
-# ---------------------------------------------------------------------------
 MYSQL_HOST: str = "localhost"
 MYSQL_PORT: int = 3306
 MYSQL_USER: str = "root"
 MYSQL_PASSWORD: str = ""
 MYSQL_DATABASE: str = "flowmaticdb"
-
-
-# ---------------------------------------------------------------------------
-# Fixtures
-# ---------------------------------------------------------------------------
-
 
 @pytest.fixture(scope="session")
 def _flowmaticdb_database() -> None:
@@ -68,7 +67,7 @@ def _flowmaticdb_database() -> None:
             password=MYSQL_PASSWORD,
             database="mysql",
         )
-    except Exception as exc:  # noqa: BLE001
+    except mysql.connector.Error as exc:
         pytest.skip(f"MySQL server not reachable on {MYSQL_HOST}:{MYSQL_PORT}: {exc}")
 
     try:
@@ -97,12 +96,12 @@ def mysql_adapter(_flowmaticdb_database: None) -> Iterator[MySQLAdapter]:
     try:
         yield adapter
     finally:
-        # Drop every user table so tests do not leak schema into each other.
         try:
-            # Roll back any unfinished transaction so DDL/DROP succeeds.
+            import mysql.connector
+
             try:
-                adapter.rollback_transaction()
-            except Exception:  # noqa: BLE001, S110
+                adapter.rollback_transaction(MySQLDialect().rollback_transaction().query)
+            except mysql.connector.Error:
                 pass
             result: ResultABC = adapter.query("SHOW TABLES")
             rows: list[dict[str, Any]] = result.fetch_dicts()
@@ -121,34 +120,22 @@ def mysql_dialect(mysql_adapter: MySQLAdapter) -> MySQLDialect:
     """Return a ``MySQLDialect`` bound to the live server's version string."""
     return MySQLDialect(version=mysql_adapter.version())
 
-
-# ---------------------------------------------------------------------------
-# Small helpers shared across tests
-# ---------------------------------------------------------------------------
-
-
 def _create_users_table(adapter: MySQLAdapter, dialect: MySQLDialect) -> None:
     """Create a minimal ``users`` table for CRUD-style tests."""
     qwp: QueryWithParams = dialect.create_table(
         if_not_exists=False,
         table="users",
         columns=[
-            {"name": "id", "type": TypeEnum.INT, "auto_increment": True, "not_null": True},
-            {"name": "name", "type": TypeEnum.STRING, "not_null": True},
-            {"name": "email", "type": TypeEnum.STRING},
-            {"name": "age", "type": TypeEnum.INT},
-            {"name": "active", "type": TypeEnum.BOOL, "default": True},
+            Column(name="id", type=TypeEnum.INT, auto_increment=True, not_null=True),
+            Column(name="name", type=TypeEnum.STRING, not_null=True),
+            Column(name="email", type=TypeEnum.STRING),
+            Column(name="age", type=TypeEnum.INT),
+            Column(name="active", type=TypeEnum.BOOL, default=True),
         ],
         primary_keys=["id"],
         constraints=None,
     )
     adapter.exec(qwp.query)
-
-
-# ---------------------------------------------------------------------------
-# 1. Full CRUD round-trip
-# ---------------------------------------------------------------------------
-
 
 def test_mysql_in_memory_crud(
     mysql_adapter: MySQLAdapter, mysql_dialect: MySQLDialect
@@ -160,21 +147,17 @@ def test_mysql_in_memory_crud(
     """
     adapter, dialect = mysql_adapter, mysql_dialect
 
-    # The driver reports a non-empty version string once connected.
     assert adapter.driver_name == "mysql"
     version: str = adapter.version()
     assert len(version) > 0
 
-    # --- CREATE TABLE -------------------------------------------------------
     _create_users_table(adapter, dialect)
 
-    # Verify the table exists via ``SHOW TABLES``.
     result: ResultABC = adapter.query("SHOW TABLES")
     rows: list[dict[str, Any]] = result.fetch_dicts()
     table_names: list[str] = [str(v) for row in rows for v in row.values()]
     assert "users" in table_names
 
-    # --- INSERT (multi-row, parameterised) ----------------------------------
     qwp: QueryWithParams = dialect.insert(
         table="users",
         values=[
@@ -189,7 +172,6 @@ def test_mysql_in_memory_crud(
     result = adapter.query_with_params(dialect, qwp)
     assert result is not None
 
-    # --- SELECT * -----------------------------------------------------------
     qwp = dialect.select(
         distinct=None,
         columns=None,
@@ -207,9 +189,8 @@ def test_mysql_in_memory_crud(
     rows = result.fetch_dicts()
     assert len(rows) == 3
 
-    # --- SELECT with WHERE --------------------------------------------------
-    from flowmaticdb.query._condition import Condition
-    from flowmaticdb.query.enums._condition import ConditionEnum
+    from flowmaticdb.query import Condition
+    from flowmaticdb.query.enums import ConditionEnum
 
     where: list[Any] = [
         Condition(condition=ConditionEnum.EQUALS, identifier="name", value="Alice")
@@ -232,7 +213,6 @@ def test_mysql_in_memory_crud(
     assert len(rows) == 1
     assert rows[0]["name"] == "Alice"
 
-    # --- UPDATE -------------------------------------------------------------
     where = [Condition(condition=ConditionEnum.EQUALS, identifier="name", value="Bob")]
     qwp = dialect.update(
         table="users",
@@ -242,7 +222,6 @@ def test_mysql_in_memory_crud(
     )
     adapter.query_with_params(dialect, qwp)
 
-    # Verify the update persisted.
     where = [Condition(condition=ConditionEnum.EQUALS, identifier="name", value="Bob")]
     qwp = dialect.select(
         distinct=None,
@@ -262,14 +241,12 @@ def test_mysql_in_memory_crud(
     assert row is not None
     assert row["age"] == 26
 
-    # --- DELETE -------------------------------------------------------------
     where = [
         Condition(condition=ConditionEnum.EQUALS, identifier="name", value="Charlie")
     ]
     qwp = dialect.delete(table="users", where=where, returning=None)
     adapter.query_with_params(dialect, qwp)
 
-    # Two rows should remain.
     qwp = dialect.select(
         distinct=None,
         columns=None,
@@ -286,12 +263,6 @@ def test_mysql_in_memory_crud(
     result = adapter.query_with_params(dialect, qwp)
     rows = result.fetch_dicts()
     assert len(rows) == 2
-
-
-# ---------------------------------------------------------------------------
-# 2. DB.connect("mysql", ...) factory
-# ---------------------------------------------------------------------------
-
 
 def test_mysql_database_connect(_flowmaticdb_database: None) -> None:
     """The ``DB.connect("mysql", "flowmaticdb")`` factory wires adapter + dialect."""
@@ -311,24 +282,19 @@ def test_mysql_database_connect(_flowmaticdb_database: None) -> None:
     finally:
         live_adapter.close()
 
-
-# ---------------------------------------------------------------------------
-# 3. SelectQuery builder (WHERE / ORDER BY / LIMIT)
-# ---------------------------------------------------------------------------
-
-
 def test_mysql_query_builder_select(
     mysql_adapter: MySQLAdapter, mysql_dialect: MySQLDialect
 ) -> None:
     """Exercise ``SelectQuery`` against MySQL with WHERE, ORDER BY and LIMIT."""
     adapter, dialect = mysql_adapter, mysql_dialect
+    db = DB(adapter, dialect)
 
     qwp: QueryWithParams = dialect.create_table(
         if_not_exists=False,
         table="items",
         columns=[
-            {"name": "id", "type": TypeEnum.INT, "auto_increment": True, "not_null": True},
-            {"name": "name", "type": TypeEnum.STRING},
+            Column(name="id", type=TypeEnum.INT, auto_increment=True, not_null=True),
+            Column(name="name", type=TypeEnum.STRING),
         ],
         primary_keys=["id"],
         constraints=None,
@@ -344,8 +310,7 @@ def test_mysql_query_builder_select(
     )
     adapter.query_with_params(dialect, qwp)
 
-    # SELECT id, name FROM items WHERE id > 1 ORDER BY name ASC
-    q: SelectQuery = SelectQuery(dialect, "items")
+    q: SelectQuery = SelectQuery(dialect, "items", database=db)
     q.columns(["id", "name"])
     q.where_greater_than("id", 1)
     q.order_by_asc("name")
@@ -353,36 +318,30 @@ def test_mysql_query_builder_select(
     qwp = q.to_query_with_params()
     result: ResultABC = adapter.query_with_params(dialect, qwp)
     rows: list[dict[str, Any]] = result.fetch_dicts()
-    assert len(rows) == 2  # ids 2 and 3
+    assert len(rows) == 2
     assert rows[0]["name"] == "Item B"
     assert rows[1]["name"] == "Item C"
 
-    # LIMIT clause.
-    q2: SelectQuery = SelectQuery(dialect, "items")
+    q2: SelectQuery = SelectQuery(dialect, "items", database=db)
     q2.limit(1)
     qwp2: QueryWithParams = q2.to_query_with_params()
     result2: ResultABC = adapter.query_with_params(dialect, qwp2)
     rows2: list[dict[str, Any]] = result2.fetch_dicts()
     assert len(rows2) == 1
 
-
-# ---------------------------------------------------------------------------
-# 4. JOINs (inner / left / right / cross)
-# ---------------------------------------------------------------------------
-
-
 def test_mysql_joins(
     mysql_adapter: MySQLAdapter, mysql_dialect: MySQLDialect
 ) -> None:
     """Exercise inner, left, right and cross joins with ``.on()`` conditions."""
     adapter, dialect = mysql_adapter, mysql_dialect
+    db = DB(adapter, dialect)
 
     users_qwp: QueryWithParams = dialect.create_table(
         if_not_exists=False,
         table="users",
         columns=[
-            {"name": "id", "type": TypeEnum.INT, "auto_increment": True, "not_null": True},
-            {"name": "name", "type": TypeEnum.STRING, "not_null": True},
+            Column(name="id", type=TypeEnum.INT, auto_increment=True, not_null=True),
+            Column(name="name", type=TypeEnum.STRING, not_null=True),
         ],
         primary_keys=["id"],
         constraints=None,
@@ -393,19 +352,18 @@ def test_mysql_joins(
         if_not_exists=False,
         table="posts",
         columns=[
-            {"name": "id", "type": TypeEnum.INT, "auto_increment": True, "not_null": True},
-            {"name": "user_id", "type": TypeEnum.INT},
-            {"name": "title", "type": TypeEnum.STRING},
+            Column(name="id", type=TypeEnum.INT, auto_increment=True, not_null=True),
+            Column(name="user_id", type=TypeEnum.INT),
+            Column(name="title", type=TypeEnum.STRING),
         ],
         primary_keys=["id"],
         constraints=[
-            {
-                "type": "foreign_key",
-                "columns": ["user_id"],
-                "ref_table": "users",
-                "ref_columns": ["id"],
-                "on_delete": "CASCADE",
-            }
+            ForeignKeyConstraint(
+                columns=["user_id"],
+                ref_table="users",
+                ref_columns=["id"],
+                on_delete="CASCADE",
+            )
         ],
     )
     adapter.exec(posts_qwp.query)
@@ -435,10 +393,7 @@ def test_mysql_joins(
         ),
     )
 
-    # --- INNER JOIN ---------------------------------------------------------
-    # ``name`` only exists on users, ``title`` only on posts → unqualified
-    # references are unambiguous.  We avoid the ambiguous ``id`` column.
-    q: SelectQuery = SelectQuery(dialect, "users")
+    q: SelectQuery = SelectQuery(dialect, "users", database=db)
     q.columns(["name", "title"])
     j = q.inner_join("posts")
     j.on(["users", "id"], ["posts", "user_id"])
@@ -447,11 +402,9 @@ def test_mysql_joins(
     qwp: QueryWithParams = q.to_query_with_params()
     result: ResultABC = adapter.query_with_params(dialect, qwp)
     rows: list[dict[str, Any]] = result.fetch_dicts()
-    assert len(rows) == 3  # every user has posts
+    assert len(rows) == 3
     assert [r["title"] for r in rows] == ["Alice post 1", "Alice post 2", "Bob post 1"]
 
-    # --- LEFT JOIN (include a user with no posts) ---------------------------
-    # Add a third user without posts.
     adapter.query_with_params(
         dialect,
         dialect.insert(
@@ -463,7 +416,7 @@ def test_mysql_joins(
         ),
     )
 
-    q2: SelectQuery = SelectQuery(dialect, "users")
+    q2: SelectQuery = SelectQuery(dialect, "users", database=db)
     q2.columns(["name", "title"])
     lj = q2.left_join("posts")
     lj.on(["users", "id"], ["posts", "user_id"])
@@ -472,18 +425,14 @@ def test_mysql_joins(
     qwp2: QueryWithParams = q2.to_query_with_params()
     result2: ResultABC = adapter.query_with_params(dialect, qwp2)
     rows2: list[dict[str, Any]] = result2.fetch_dicts()
-    # Carol (id 3) has no posts → LEFT JOIN keeps her row with NULL title.
     assert len(rows2) == 4
     carol = [r for r in rows2 if r["name"] == "Carol"]
     assert len(carol) == 1
     assert carol[0]["title"] is None
 
-    # --- RIGHT JOIN (via raw join expression; JoinEnum has no RIGHT) --------
-    # ``JoinsMixin.join()`` accepts a ``SqlABC`` expression, so wrap the raw
-    # SQL in ``raw(...)`` — a bare string would be silently ignored.
-    from flowmaticdb.helpers import raw as raw_expr
+    from flowmaticdb import raw as raw_expr
 
-    q3: SelectQuery = SelectQuery(dialect, "users")
+    q3: SelectQuery = SelectQuery(dialect, "users", database=db)
     q3.columns(["name", "title"])
     q3.join(raw_expr("RIGHT JOIN `posts` ON `users`.`id` = `posts`.`user_id`"))
     q3.order_by_asc("title")
@@ -491,44 +440,35 @@ def test_mysql_joins(
     qwp3: QueryWithParams = q3.to_query_with_params()
     result3: ResultABC = adapter.query_with_params(dialect, qwp3)
     rows3: list[dict[str, Any]] = result3.fetch_dicts()
-    # Every post is returned (all belong to users, so no NULL user side).
     assert len(rows3) == 3
     assert [r["title"] for r in rows3] == ["Alice post 1", "Alice post 2", "Bob post 1"]
 
-    # --- CROSS JOIN ---------------------------------------------------------
-    q4: SelectQuery = SelectQuery(dialect, "users")
+    q4: SelectQuery = SelectQuery(dialect, "users", database=db)
     q4.columns(["name", "title"])
     cj = q4.cross_join("posts")
-    # CROSS JOIN with no ON → cartesian product.
     assert cj.conditions == []
 
     qwp4: QueryWithParams = q4.to_query_with_params()
     result4: ResultABC = adapter.query_with_params(dialect, qwp4)
     rows4: list[dict[str, Any]] = result4.fetch_dicts()
-    # 3 users × 3 posts = 9 rows.
     assert len(rows4) == 9
-
-
-# ---------------------------------------------------------------------------
-# 5. WHERE conditions
-# ---------------------------------------------------------------------------
-
 
 def test_mysql_conditions(
     mysql_adapter: MySQLAdapter, mysql_dialect: MySQLDialect
 ) -> None:
     """Exercise the full ``where_*`` fluent API against MySQL."""
     adapter, dialect = mysql_adapter, mysql_dialect
+    db = DB(adapter, dialect)
 
     qwp: QueryWithParams = dialect.create_table(
         if_not_exists=False,
         table="products",
         columns=[
-            {"name": "id", "type": TypeEnum.INT, "auto_increment": True, "not_null": True},
-            {"name": "name", "type": TypeEnum.STRING, "not_null": True},
-            {"name": "price", "type": TypeEnum.INT},
-            {"name": "category", "type": TypeEnum.STRING},
-            {"name": "in_stock", "type": TypeEnum.BOOL, "default": True},
+            Column(name="id", type=TypeEnum.INT, auto_increment=True, not_null=True),
+            Column(name="name", type=TypeEnum.STRING, not_null=True),
+            Column(name="price", type=TypeEnum.INT),
+            Column(name="category", type=TypeEnum.STRING),
+            Column(name="in_stock", type=TypeEnum.BOOL, default=True),
         ],
         primary_keys=["id"],
         constraints=None,
@@ -556,96 +496,76 @@ def test_mysql_conditions(
         rows: list[dict[str, Any]] = adapter.query_with_params(dialect, qwp_).fetch_dicts()
         return rows
 
-    # where_equals
-    q = SelectQuery(dialect, "products").columns(["name"])
+    q = SelectQuery(dialect, "products", database=db).columns(["name"])
     q.where_equals("name", "Widget")
     assert [r["name"] for r in _rows(q)] == ["Widget"]
 
-    # where_in
-    q = SelectQuery(dialect, "products").columns(["name"])
+    q = SelectQuery(dialect, "products", database=db).columns(["name"])
     q.where_in("category", ["A", "C"])
     names = sorted(r["name"] for r in _rows(q))
     assert names == ["Gizmo", "Thingy", "Widget"]
 
-    # where_between
-    q = SelectQuery(dialect, "products").columns(["name"])
+    q = SelectQuery(dialect, "products", database=db).columns(["name"])
     q.where_between("price", 20, 60)
     names = sorted(r["name"] for r in _rows(q))
     assert names == ["Gadget", "Gizmo"]
 
-    # where_not_between
-    q = SelectQuery(dialect, "products").columns(["name"])
+    q = SelectQuery(dialect, "products", database=db).columns(["name"])
     q.where_not_between("price", 20, 60)
     names = sorted(r["name"] for r in _rows(q))
     assert names == ["Thingy", "Widget"]
 
-    # where_like
-    q = SelectQuery(dialect, "products").columns(["name"])
+    q = SelectQuery(dialect, "products", database=db).columns(["name"])
     q.where_like("name", "G%")
     names = sorted(r["name"] for r in _rows(q))
     assert names == ["Gadget", "Gizmo"]
 
-    # where_starts_with
-    q = SelectQuery(dialect, "products").columns(["name"])
+    q = SelectQuery(dialect, "products", database=db).columns(["name"])
     q.where_starts_with("name", "Wi")
     assert [r["name"] for r in _rows(q)] == ["Widget"]
 
-    # where_ends_with
-    q = SelectQuery(dialect, "products").columns(["name"])
+    q = SelectQuery(dialect, "products", database=db).columns(["name"])
     q.where_ends_with("name", "et")
     names = sorted(r["name"] for r in _rows(q))
     assert names == ["Gadget", "Widget"]
 
-    # where_contains
-    q = SelectQuery(dialect, "products").columns(["name"])
+    q = SelectQuery(dialect, "products", database=db).columns(["name"])
     q.where_contains("name", "adge")
     assert [r["name"] for r in _rows(q)] == ["Gadget"]
 
-    # where_is_null
-    q = SelectQuery(dialect, "products").columns(["name"])
+    q = SelectQuery(dialect, "products", database=db).columns(["name"])
     q.where_is_null("in_stock")
     assert [r["name"] for r in _rows(q)] == ["Thingy"]
 
-    # where_is_not_null
-    q = SelectQuery(dialect, "products").columns(["name"])
+    q = SelectQuery(dialect, "products", database=db).columns(["name"])
     q.where_is_not_null("in_stock")
     names = sorted(r["name"] for r in _rows(q))
     assert names == ["Gadget", "Gizmo", "Widget"]
 
-    # where_greater_than / where_less_than_or_equals
-    q = SelectQuery(dialect, "products").columns(["name"])
+    q = SelectQuery(dialect, "products", database=db).columns(["name"])
     q.where_greater_than("price", 25)
     names = sorted(r["name"] for r in _rows(q))
     assert names == ["Gizmo", "Thingy"]
 
-    q = SelectQuery(dialect, "products").columns(["name"])
+    q = SelectQuery(dialect, "products", database=db).columns(["name"])
     q.where_less_than_or_equals("price", 25)
     names = sorted(r["name"] for r in _rows(q))
     assert names == ["Gadget", "Widget"]
 
-    # where_not_equals
-    q = SelectQuery(dialect, "products").columns(["name"])
+    q = SelectQuery(dialect, "products", database=db).columns(["name"])
     q.where_not_equals("category", "A")
     names = sorted(r["name"] for r in _rows(q))
     assert names == ["Gadget", "Thingy"]
 
-    # where_not_in
-    q = SelectQuery(dialect, "products").columns(["name"])
+    q = SelectQuery(dialect, "products", database=db).columns(["name"])
     q.where_not_in("category", ["A"])
     names = sorted(r["name"] for r in _rows(q))
     assert names == ["Gadget", "Thingy"]
 
-    # where_regex (MySQL REGEXP)
-    q = SelectQuery(dialect, "products").columns(["name"])
+    q = SelectQuery(dialect, "products", database=db).columns(["name"])
     q.where_regex("name", "^G.*o$")
     names = sorted(r["name"] for r in _rows(q))
     assert names == ["Gizmo"]
-
-
-# ---------------------------------------------------------------------------
-# 6. Transactions & savepoints
-# ---------------------------------------------------------------------------
-
 
 def test_mysql_transactions(
     mysql_adapter: MySQLAdapter, mysql_dialect: MySQLDialect
@@ -657,8 +577,8 @@ def test_mysql_transactions(
         if_not_exists=False,
         table="accounts",
         columns=[
-            {"name": "id", "type": TypeEnum.INT, "auto_increment": True, "not_null": True},
-            {"name": "balance", "type": TypeEnum.INT},
+            Column(name="id", type=TypeEnum.INT, auto_increment=True, not_null=True),
+            Column(name="balance", type=TypeEnum.INT),
         ],
         primary_keys=["id"],
         constraints=None,
@@ -682,48 +602,38 @@ def test_mysql_transactions(
 
     assert _count() == 0
 
-    # --- ROLLBACK discards the insert --------------------------------------
-    adapter.begin_transaction()
+    adapter.begin_transaction(dialect.begin_transaction().query)
     assert adapter.in_transaction is True
     adapter.query_with_params(dialect, insert_qwp)
-    adapter.rollback_transaction()
+    adapter.rollback_transaction(dialect.rollback_transaction().query)
     assert adapter.in_transaction is False
     assert _count() == 0
 
-    # --- COMMIT persists the insert ----------------------------------------
-    adapter.begin_transaction()
+    adapter.begin_transaction(dialect.begin_transaction().query)
     adapter.query_with_params(dialect, insert_qwp)
-    adapter.commit_transaction()
+    adapter.commit_transaction(dialect.commit_transaction().query)
     assert adapter.in_transaction is False
     assert _count() == 1
 
-    # --- SAVEPOINT rollback does not undo the outer transaction ------------
-    adapter.begin_transaction()
-    adapter.query_with_params(dialect, insert_qwp)  # second row
+    adapter.begin_transaction(dialect.begin_transaction().query)
+    adapter.query_with_params(dialect, insert_qwp)
 
-    adapter.begin_savepoint("sp1")
-    adapter.query_with_params(dialect, insert_qwp)  # third row (inside savepoint)
-    adapter.rollback_savepoint("sp1")  # discard the third row only
+    adapter.begin_savepoint(dialect.begin_savepoint("sp1").query)
+    adapter.query_with_params(dialect, insert_qwp)
+    adapter.rollback_savepoint(dialect.rollback_savepoint("sp1").query)
 
-    adapter.commit_transaction()  # commit the second row
-    assert _count() == 2  # first commit + second commit; savepoint rolled back
+    adapter.commit_transaction(dialect.commit_transaction().query)
+    assert _count() == 2
 
-    # --- SAVEPOINT release (commit) keeps the savepoint's work -------------
-    adapter.begin_transaction()
-    adapter.query_with_params(dialect, insert_qwp)  # third row
+    adapter.begin_transaction(dialect.begin_transaction().query)
+    adapter.query_with_params(dialect, insert_qwp)
 
-    adapter.begin_savepoint("sp2")
-    adapter.query_with_params(dialect, insert_qwp)  # fourth row (inside savepoint)
-    adapter.commit_savepoint("sp2")  # release → keep the row
+    adapter.begin_savepoint(dialect.begin_savepoint("sp2").query)
+    adapter.query_with_params(dialect, insert_qwp)
+    adapter.commit_savepoint(dialect.commit_savepoint("sp2").query)
 
-    adapter.rollback_transaction()  # rolling back outer tx discards everything
-    assert _count() == 2  # unchanged from before the last transaction
-
-
-# ---------------------------------------------------------------------------
-# 7. INSERT ... ON DUPLICATE KEY UPDATE
-# ---------------------------------------------------------------------------
-
+    adapter.rollback_transaction(dialect.rollback_transaction().query)
+    assert _count() == 2
 
 def test_mysql_on_duplicate_key(
     mysql_adapter: MySQLAdapter, mysql_dialect: MySQLDialect
@@ -735,16 +645,15 @@ def test_mysql_on_duplicate_key(
         if_not_exists=False,
         table="kv",
         columns=[
-            {"name": "id", "type": TypeEnum.INT, "auto_increment": True, "not_null": True},
-            {"name": "key", "type": TypeEnum.STRING, "not_null": True},
-            {"name": "value", "type": TypeEnum.STRING},
+            Column(name="id", type=TypeEnum.INT, auto_increment=True, not_null=True),
+            Column(name="key", type=TypeEnum.STRING, not_null=True),
+            Column(name="value", type=TypeEnum.STRING),
         ],
         primary_keys=["id"],
-        constraints=[{"type": "unique", "columns": ["key"]}],
+        constraints=[UniqueConstraint(columns=["key"])],
     )
     adapter.exec(qwp.query)
 
-    # Initial insert.
     adapter.query_with_params(
         dialect,
         dialect.insert(
@@ -756,8 +665,6 @@ def test_mysql_on_duplicate_key(
         ),
     )
 
-    # Build the ON DUPLICATE KEY UPDATE query via the dialect directly so we
-    # can also assert the generated SQL shape.
     qwp = dialect.insert(
         table="kv",
         values=[{"key": "greeting", "value": "world"}],
@@ -768,7 +675,6 @@ def test_mysql_on_duplicate_key(
     assert "ON DUPLICATE KEY UPDATE" in qwp.query
     adapter.query_with_params(dialect, qwp)
 
-    # The row should be updated, not duplicated.
     result: ResultABC = adapter.query("SELECT COUNT(*) AS cnt FROM kv")
     row: dict[str, Any] | None = result.fetch_dict()
     assert row is not None
@@ -779,7 +685,6 @@ def test_mysql_on_duplicate_key(
     assert row is not None
     assert row["v"] == "world"
 
-    # --- DO NOTHING → INSERT IGNORE ----------------------------------------
     qwp = dialect.insert(
         table="kv",
         values=[{"key": "greeting", "value": "ignored"}],
@@ -793,9 +698,8 @@ def test_mysql_on_duplicate_key(
     result = adapter.query("SELECT `value` AS v FROM kv WHERE `key` = 'greeting'")
     row = result.fetch_dict()
     assert row is not None
-    assert row["v"] == "world"  # unchanged
+    assert row["v"] == "world"
 
-    # --- Update-all (empty updates dict → VALUES(col)) ---------------------
     qwp = dialect.insert(
         table="kv",
         values=[{"key": "greeting", "value": "from_values"}],
@@ -809,109 +713,92 @@ def test_mysql_on_duplicate_key(
     assert row is not None
     assert row["v"] == "from_values"
 
-
-# ---------------------------------------------------------------------------
-# 8. ALTER TABLE
-# ---------------------------------------------------------------------------
-
-
 def test_mysql_alter_table(
     mysql_adapter: MySQLAdapter, mysql_dialect: MySQLDialect
 ) -> None:
     """Exercise ADD / MODIFY / RENAME / DROP COLUMN + UNIQUE + FOREIGN KEY."""
     adapter, dialect = mysql_adapter, mysql_dialect
 
-    # Parent table for the FK test.
     parent_qwp: QueryWithParams = dialect.create_table(
         if_not_exists=False,
         table="categories",
         columns=[
-            {"name": "id", "type": TypeEnum.INT, "auto_increment": True, "not_null": True},
-            {"name": "name", "type": TypeEnum.STRING, "not_null": True},
+            Column(name="id", type=TypeEnum.INT, auto_increment=True, not_null=True),
+            Column(name="name", type=TypeEnum.STRING, not_null=True),
         ],
         primary_keys=["id"],
         constraints=None,
     )
     adapter.exec(parent_qwp.query)
 
-    # Child table to ALTER.
     child_qwp: QueryWithParams = dialect.create_table(
         if_not_exists=False,
         table="articles",
         columns=[
-            {"name": "id", "type": TypeEnum.INT, "auto_increment": True, "not_null": True},
-            {"name": "title", "type": TypeEnum.STRING, "not_null": True},
+            Column(name="id", type=TypeEnum.INT, auto_increment=True, not_null=True),
+            Column(name="title", type=TypeEnum.STRING, not_null=True),
         ],
         primary_keys=["id"],
         constraints=None,
     )
     adapter.exec(child_qwp.query)
 
-    # ADD COLUMN
     for qwp_ in dialect.alter_table(
         "articles",
-        [{"type": "add_column", "column": {"name": "body", "type": TypeEnum.STRING}}],
+        [AddColumn(name="body", type=TypeEnum.STRING)],
     ):
         adapter.exec(qwp_.query)
 
     cols = _column_names(adapter, "articles")
     assert "body" in cols
 
-    # MODIFY COLUMN (widen title to VARCHAR(100))
     for qwp_ in dialect.alter_table(
         "articles",
-        [{"type": "alter_column", "column": {"name": "title", "type": TypeEnum.STRING, "bits": 100}}],
+        [AlterColumn(column="title", type=TypeEnum.STRING, bits=100)],
     ):
         adapter.exec(qwp_.query)
-    # MySQL stores the new length in information_schema.
     assert _column_type(adapter, "articles", "title") == "varchar(100)"
 
-    # RENAME COLUMN title → headline
     for qwp_ in dialect.alter_table(
         "articles",
-        [{"type": "rename_column", "old_name": "title", "new_name": "headline"}],
+        [RenameColumn(old_name="title", new_name="headline")],
     ):
         adapter.exec(qwp_.query)
     cols = _column_names(adapter, "articles")
     assert "headline" in cols
     assert "title" not in cols
 
-    # ADD UNIQUE on body
     for qwp_ in dialect.alter_table(
         "articles",
-        [{"type": "add_unique", "columns": ["body"], "name": "uq_articles_body"}],
+        [AddUniqueConstraint(columns=["body"], name="uq_articles_body")],
     ):
         adapter.exec(qwp_.query)
     assert _has_index(adapter, "articles", "uq_articles_body")
 
-    # ADD FOREIGN KEY articles.category_id → categories.id
-    # First add the column we will reference.
     for qwp_ in dialect.alter_table(
         "articles",
-        [{"type": "add_column", "column": {"name": "category_id", "type": TypeEnum.INT}}],
+        [AddColumn(name="category_id", type=TypeEnum.INT)],
     ):
         adapter.exec(qwp_.query)
 
     for qwp_ in dialect.alter_table(
         "articles",
         [
-            {
-                "type": "add_foreign_key",
-                "columns": ["category_id"],
-                "ref_table": "categories",
-                "ref_columns": ["id"],
-                "name": "fk_articles_category",
-                "on_delete": "CASCADE",
-            }
+            AddForeignKeyConstraint(
+                columns=["category_id"],
+                ref_table="categories",
+                ref_columns=["id"],
+                name="fk_articles_category",
+                on_delete="CASCADE",
+            )
         ],
     ):
         adapter.exec(qwp_.query)
     assert _has_fk(adapter, "articles", "fk_articles_category")
 
-    # DROP COLUMN body
     for qwp_ in dialect.alter_table(
         "articles",
-        [{"type": "drop_column", "column": "body"}],
+        [DropColumn(column="body")],
     ):
         adapter.exec(qwp_.query)
     cols = _column_names(adapter, "articles")
@@ -964,12 +851,6 @@ def _has_fk(adapter: MySQLAdapter, table: str, constraint_name: str) -> bool:
     row: dict[str, Any] | None = result.fetch_dict()
     return bool(row and int(row["cnt"]) > 0)
 
-
-# ---------------------------------------------------------------------------
-# 9. DDL — CREATE TABLE with several column types + DROP TABLE
-# ---------------------------------------------------------------------------
-
-
 def test_mysql_ddl(
     mysql_adapter: MySQLAdapter, mysql_dialect: MySQLDialect
 ) -> None:
@@ -980,11 +861,11 @@ def test_mysql_ddl(
         if_not_exists=False,
         table="typed",
         columns=[
-            {"name": "id", "type": TypeEnum.INT, "auto_increment": True, "not_null": True},
-            {"name": "flag", "type": TypeEnum.BOOL, "default": False},
-            {"name": "score", "type": TypeEnum.FLOAT},
-            {"name": "label", "type": TypeEnum.STRING, "not_null": True},
-            {"name": "created_at", "type": TypeEnum.DATETIME},
+            Column(name="id", type=TypeEnum.INT, auto_increment=True, not_null=True),
+            Column(name="flag", type=TypeEnum.BOOL, default=False),
+            Column(name="score", type=TypeEnum.FLOAT),
+            Column(name="label", type=TypeEnum.STRING, not_null=True),
+            Column(name="created_at", type=TypeEnum.DATETIME),
         ],
         primary_keys=["id"],
         constraints=None,
@@ -994,10 +875,8 @@ def test_mysql_ddl(
     cols = _column_names(adapter, "typed")
     assert cols == ["id", "flag", "score", "label", "created_at"]
 
-    # Booleans come back as TINYINT(1) in MySQL.
     assert _column_type(adapter, "typed", "flag") == "tinyint(1)"
 
-    # Insert a row with a bool and verify round-trip cast (1/0).
     adapter.query_with_params(
         dialect,
         dialect.insert(
@@ -1013,10 +892,9 @@ def test_mysql_ddl(
     result: ResultABC = adapter.query("SELECT `flag` AS f, `score` AS s FROM typed")
     row: dict[str, Any] | None = result.fetch_dict()
     assert row is not None
-    assert row["f"] == 1  # MySQL stores TINYINT(1)
+    assert row["f"] == 1
     assert float(row["s"]) == 1.5
 
-    # DROP TABLE
     drop_qwp: QueryWithParams = dialect.drop_table(if_exists=True, table="typed")
     adapter.exec(drop_qwp.query)
 
@@ -1025,30 +903,24 @@ def test_mysql_ddl(
     names = [str(v) for r in rows for v in r.values()]
     assert "typed" not in names
 
-
-# ---------------------------------------------------------------------------
-# 10. Giant SELECT — every condition flavour, joins, group/having, union
-# ---------------------------------------------------------------------------
-
-
 def test_mysql_giant_select(
     mysql_adapter: MySQLAdapter, mysql_dialect: MySQLDialect
 ) -> None:
     """Build a maximal query exercising every supported SELECT feature."""
     adapter, dialect = mysql_adapter, mysql_dialect
+    db = DB(adapter, dialect)
 
-    # --- Schema -------------------------------------------------------------
     users_qwp: QueryWithParams = dialect.create_table(
         if_not_exists=False,
         table="users",
         columns=[
-            {"name": "id", "type": TypeEnum.INT, "auto_increment": True, "not_null": True},
-            {"name": "name", "type": TypeEnum.STRING, "not_null": True},
-            {"name": "age", "type": TypeEnum.INT},
-            {"name": "email", "type": TypeEnum.STRING},
+            Column(name="id", type=TypeEnum.INT, auto_increment=True, not_null=True),
+            Column(name="name", type=TypeEnum.STRING, not_null=True),
+            Column(name="age", type=TypeEnum.INT),
+            Column(name="email", type=TypeEnum.STRING),
         ],
         primary_keys=["id"],
-        constraints=[{"type": "unique", "columns": ["email"]}],
+        constraints=[UniqueConstraint(columns=["email"])],
     )
     adapter.exec(users_qwp.query)
 
@@ -1056,20 +928,19 @@ def test_mysql_giant_select(
         if_not_exists=False,
         table="posts",
         columns=[
-            {"name": "id", "type": TypeEnum.INT, "auto_increment": True, "not_null": True},
-            {"name": "user_id", "type": TypeEnum.INT, "not_null": True},
-            {"name": "title", "type": TypeEnum.STRING, "not_null": True},
-            {"name": "views", "type": TypeEnum.INT},
+            Column(name="id", type=TypeEnum.INT, auto_increment=True, not_null=True),
+            Column(name="user_id", type=TypeEnum.INT, not_null=True),
+            Column(name="title", type=TypeEnum.STRING, not_null=True),
+            Column(name="views", type=TypeEnum.INT),
         ],
         primary_keys=["id"],
         constraints=[
-            {
-                "type": "foreign_key",
-                "columns": ["user_id"],
-                "ref_table": "users",
-                "ref_columns": ["id"],
-                "on_delete": "CASCADE",
-            }
+            ForeignKeyConstraint(
+                columns=["user_id"],
+                ref_table="users",
+                ref_columns=["id"],
+                on_delete="CASCADE",
+            )
         ],
     )
     adapter.exec(posts_qwp.query)
@@ -1104,14 +975,9 @@ def test_mysql_giant_select(
         ),
     )
 
-    # --- Build the giant query ---------------------------------------------
-    # Qualified column references are expressed as ``Identifier(["t","col"])``
-    # so the dialect emits `` `t`.`col` `` rather than treating ``"t.col"`` as
-    # a single (non-existent) identifier.  Aggregate expressions use ``raw()``
-    # since the fluent API has no first-class aggregate builder.
-    from flowmaticdb.helpers import identifier, raw
+    from flowmaticdb import identifier, raw
 
-    q: SelectQuery = SelectQuery(dialect, "users")
+    q: SelectQuery = SelectQuery(dialect, "users", database=db)
     q.columns(
         [
             identifier(["users", "id"]),
@@ -1124,8 +990,6 @@ def test_mysql_giant_select(
     inner = q.inner_join("posts")
     inner.on(["users", "id"], ["posts", "user_id"])
 
-    # Every supported condition flavour (identifiers passed as two-element
-    # lists so the qualifier is preserved).
     q.where_greater_than(["users", "age"], 18)
     q.where_in(["users", "id"], [1, 2, 3])
     q.where_not_in(["users", "name"], ["Zoe"])
@@ -1141,10 +1005,7 @@ def test_mysql_giant_select(
     q.order_by_desc("total_views")
     q.limit(10)
 
-    # A UNION branch that selects Carol again so we can assert it merges.
-    # UNION requires both branches to have the same number of columns, so we
-    # pad the branch with NULLs for the aggregate columns.
-    union_q: SelectQuery = SelectQuery(dialect, "users")
+    union_q: SelectQuery = SelectQuery(dialect, "users", database=db)
     union_q.columns(
         [
             identifier(["users", "id"]),
@@ -1158,37 +1019,26 @@ def test_mysql_giant_select(
 
     qwp: QueryWithParams = q.to_query_with_params()
 
-    # Sanity-check the generated SQL shape (MySQL placeholders, no RETURNING).
-    # The query is wrapped in parentheses because UNION is combined with
-    # LIMIT, so it starts with "(" not "SELECT".
     assert qwp.query.startswith("(")
     assert "SELECT" in qwp.query
     assert "RETURNING" not in qwp.query
     assert "ON DUPLICATE" not in qwp.query
-    assert "?" in qwp.query  # parameterised
+    assert "?" in qwp.query
     assert "INNER JOIN" in qwp.query
     assert "GROUP BY" in qwp.query
     assert "HAVING" in qwp.query
     assert "ORDER BY" in qwp.query
     assert "LIMIT" in qwp.query
     assert "UNION" in qwp.query
-    # Qualified identifiers must be split into `` `t`.`c` ``, not `` `t.c` ``.
     assert "`users`.`id`" in qwp.query
     assert "`users`.`age`" in qwp.query
 
-    # --- Execute & assert ---------------------------------------------------
     result: ResultABC = adapter.query_with_params(dialect, qwp)
     rows: list[dict[str, Any]] = result.fetch_dicts()
 
-    # The main branch returns 3 grouped rows (Alice 2, Bob 1, Carol 1).
-    # The UNION adds Carol's id+name again.  Because the column lists differ
-    # between the two branches (the union branch has no post_count/total_views
-    # columns) MySQL fills them with NULL — that is fine, we just assert the
-    # main rows are present and ordered.
     main_rows = [r for r in rows if r["post_count"] is not None]
     assert len(main_rows) == 3
 
-    # Ordered by total_views DESC → Carol (999), Alice (150), Bob (10).
     names_in_order = [r["name"] for r in main_rows]
     assert names_in_order == ["Carol", "Alice", "Bob"]
 

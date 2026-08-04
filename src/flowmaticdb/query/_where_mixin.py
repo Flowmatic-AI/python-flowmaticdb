@@ -3,33 +3,32 @@ from __future__ import annotations
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Any, Self
 
-from flowmaticdb.query._condition_group import WhereGroup
+from flowmaticdb.query._condition import Condition
+from flowmaticdb.query._condition_group import ConditionGroupABC
 from flowmaticdb.query._condition_mixin import ConditionMixin
-from flowmaticdb.query.enums._chain import ChainEnum
+from flowmaticdb.query.enums import ChainEnum
 
 if TYPE_CHECKING:
     from flowmaticdb.query._select import SelectQuery
 
 
 class WhereMixin(ConditionMixin):
-    def __init__(self, *args: Any, **kwargs: Any) -> None:
-        super().__init__(*args, **kwargs)
-        self.where: list[Any] = []
+    where: list[Any]
 
-    def where_equals(self, column: str | list[str], value: Any) -> Self:
-        self._equals(self.where, column, value)
+    def where_equals(self, column: str | list[str], value: Any, cast: bool = False) -> Self:
+        self._equals(self.where, column, value, cast=cast)
         return self
 
-    def or_where_equals(self, column: str | list[str], value: Any) -> Self:
-        self._equals(self.where, column, value, chain=ChainEnum.OR)
+    def or_where_equals(self, column: str | list[str], value: Any, cast: bool = False) -> Self:
+        self._equals(self.where, column, value, cast=cast, chain=ChainEnum.OR)
         return self
 
-    def where_not_equals(self, column: str | list[str], value: Any) -> Self:
-        self._not_equals(self.where, column, value)
+    def where_not_equals(self, column: str | list[str], value: Any, cast: bool = False) -> Self:
+        self._not_equals(self.where, column, value, cast=cast)
         return self
 
-    def or_where_not_equals(self, column: str | list[str], value: Any) -> Self:
-        self._not_equals(self.where, column, value, chain=ChainEnum.OR)
+    def or_where_not_equals(self, column: str | list[str], value: Any, cast: bool = False) -> Self:
+        self._not_equals(self.where, column, value, cast=cast, chain=ChainEnum.OR)
         return self
 
     def where_is_null(self, column: str | list[str]) -> Self:
@@ -48,68 +47,68 @@ class WhereMixin(ConditionMixin):
         self._is_not_null(self.where, column, chain=ChainEnum.OR)
         return self
 
-    def where_like(self, column: str | list[str], value: Any) -> Self:
-        self._like(self.where, column, value)
+    def where_like(self, column: str | list[str], value: Any, case_insensitive: bool = False) -> Self:
+        self._like(self.where, column, value, case_insensitive)
         return self
 
-    def or_where_like(self, column: str | list[str], value: Any) -> Self:
-        self._like(self.where, column, value, chain=ChainEnum.OR)
+    def or_where_like(self, column: str | list[str], value: Any, case_insensitive: bool = False) -> Self:
+        self._like(self.where, column, value, case_insensitive, chain=ChainEnum.OR)
         return self
 
-    def where_not_like(self, column: str | list[str], value: Any) -> Self:
-        self._not_like(self.where, column, value)
+    def where_not_like(self, column: str | list[str], value: Any, case_insensitive: bool = False) -> Self:
+        self._not_like(self.where, column, value, case_insensitive)
         return self
 
-    def or_where_not_like(self, column: str | list[str], value: Any) -> Self:
-        self._not_like(self.where, column, value, chain=ChainEnum.OR)
+    def or_where_not_like(self, column: str | list[str], value: Any, case_insensitive: bool = False) -> Self:
+        self._not_like(self.where, column, value, case_insensitive, chain=ChainEnum.OR)
         return self
 
-    def where_starts_with(self, column: str | list[str], value: Any) -> Self:
-        self._starts_with(self.where, column, value)
+    def where_starts_with(self, column: str | list[str], value: Any, case_insensitive: bool = False, escape_backslash: bool = False) -> Self:
+        self._starts_with(self.where, column, value, case_insensitive, escape_backslash)
         return self
 
-    def or_where_starts_with(self, column: str | list[str], value: Any) -> Self:
-        self._starts_with(self.where, column, value, chain=ChainEnum.OR)
+    def or_where_starts_with(self, column: str | list[str], value: Any, case_insensitive: bool = False, escape_backslash: bool = False) -> Self:
+        self._starts_with(self.where, column, value, case_insensitive, escape_backslash, chain=ChainEnum.OR)
         return self
 
-    def where_ends_with(self, column: str | list[str], value: Any) -> Self:
-        self._ends_with(self.where, column, value)
+    def where_ends_with(self, column: str | list[str], value: Any, case_insensitive: bool = False, escape_backslash: bool = False) -> Self:
+        self._ends_with(self.where, column, value, case_insensitive, escape_backslash)
         return self
 
-    def or_where_ends_with(self, column: str | list[str], value: Any) -> Self:
-        self._ends_with(self.where, column, value, chain=ChainEnum.OR)
+    def or_where_ends_with(self, column: str | list[str], value: Any, case_insensitive: bool = False, escape_backslash: bool = False) -> Self:
+        self._ends_with(self.where, column, value, case_insensitive, escape_backslash, chain=ChainEnum.OR)
         return self
 
-    def where_contains(self, column: str | list[str], value: Any) -> Self:
-        self._contains(self.where, column, value)
+    def where_contains(self, column: str | list[str], value: Any, case_insensitive: bool = False, escape_backslash: bool = False) -> Self:
+        self._contains(self.where, column, value, case_insensitive, escape_backslash)
         return self
 
-    def or_where_contains(self, column: str | list[str], value: Any) -> Self:
-        self._contains(self.where, column, value, chain=ChainEnum.OR)
+    def or_where_contains(self, column: str | list[str], value: Any, case_insensitive: bool = False, escape_backslash: bool = False) -> Self:
+        self._contains(self.where, column, value, case_insensitive, escape_backslash, chain=ChainEnum.OR)
         return self
 
-    def where_not_contains(self, column: str | list[str], value: Any) -> Self:
-        self._not_contains(self.where, column, value)
+    def where_not_contains(self, column: str | list[str], value: Any, case_insensitive: bool = False, escape_backslash: bool = False) -> Self:
+        self._not_contains(self.where, column, value, case_insensitive, escape_backslash)
         return self
 
-    def or_where_not_contains(self, column: str | list[str], value: Any) -> Self:
-        self._not_contains(self.where, column, value, chain=ChainEnum.OR)
+    def or_where_not_contains(self, column: str | list[str], value: Any, case_insensitive: bool = False, escape_backslash: bool = False) -> Self:
+        self._not_contains(self.where, column, value, case_insensitive, escape_backslash, chain=ChainEnum.OR)
         return self
 
-    def where_glob(self, column: str | list[str], value: Any) -> Self:
-        self._glob(self.where, column, value)
+    def where_glob(self, column: str | list[str], value: Any, case_insensitive: bool = False) -> Self:
+        self._glob(self.where, column, value, case_insensitive)
         return self
 
-    def or_where_glob(self, column: str | list[str], value: Any) -> Self:
-        self._glob(self.where, column, value, chain=ChainEnum.OR)
+    def or_where_glob(self, column: str | list[str], value: Any, case_insensitive: bool = False) -> Self:
+        self._glob(self.where, column, value, case_insensitive, chain=ChainEnum.OR)
         return self
 
-    def where_not_glob(self, column: str | list[str], value: Any) -> Self:
-        self._not_glob(self.where, column, value)
+    def where_not_glob(self, column: str | list[str], value: Any, case_insensitive: bool = False) -> Self:
+        self._not_glob(self.where, column, value, case_insensitive)
         return self
 
-    def or_where_not_glob(self, column: str | list[str], value: Any) -> Self:
-        self._not_glob(self.where, column, value, chain=ChainEnum.OR)
+    def or_where_not_glob(self, column: str | list[str], value: Any, case_insensitive: bool = False) -> Self:
+        self._not_glob(self.where, column, value, case_insensitive, chain=ChainEnum.OR)
         return self
 
     def where_in(self, column: str | list[str], values: list[Any]) -> Self:
@@ -255,3 +254,16 @@ class WhereMixin(ConditionMixin):
     def or_where_raw(self, sql: str, values: list[Any] | None = None) -> Self:
         self._add_raw_condition(self.where, sql, values, chain=ChainEnum.OR)
         return self
+
+
+class WhereGroup(ConditionGroupABC, WhereMixin):
+    def __init__(self, chain: ChainEnum = ChainEnum.AND, not_: bool = False) -> None:
+        super().__init__(chain=chain, not_=not_)
+        self.where: list[Any] = []
+
+    @property
+    def conditions(self) -> list[Condition | ConditionGroupABC]:
+        return list(self.where)
+
+    def add_condition(self, condition: Condition | ConditionGroupABC) -> None:
+        self.where.append(condition)

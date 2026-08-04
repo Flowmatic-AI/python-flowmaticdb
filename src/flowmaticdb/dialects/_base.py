@@ -3,14 +3,18 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from typing import TYPE_CHECKING, Any
 
-from flowmaticdb.query.enums._type import TypeEnum
+from flowmaticdb.query.enums import TypeEnum
 
 if TYPE_CHECKING:
     from flowmaticdb._query_with_params import QueryWithParams
-    from flowmaticdb.query._on_conflict import OnConflict
+    from flowmaticdb.query import OnConflict
+    from flowmaticdb.query.ddl import AlterABC, Column, ConstraintABC
 
 
 class DialectABC(ABC):
+    on_conflict: bool
+    returning: bool
+
     def __init__(self, version: str = "0", options: dict[str, Any] | None = None) -> None:
         self._version_str = version
         self._version = self._parse_version(version)
@@ -99,9 +103,9 @@ class DialectABC(ABC):
         self,
         if_not_exists: bool,
         table: Any,
-        columns: list[dict[str, Any]],
+        columns: list[Column],
         primary_keys: list[str] | None,
-        constraints: list[dict[str, Any]] | None,
+        constraints: list[ConstraintABC] | None,
     ) -> QueryWithParams:
         ...
 
@@ -109,7 +113,7 @@ class DialectABC(ABC):
     def alter_table(
         self,
         table: Any,
-        alters: list[dict[str, Any]],
+        alters: list[AlterABC],
     ) -> list[QueryWithParams]:
         ...
 
@@ -122,15 +126,15 @@ class DialectABC(ABC):
         ...
 
     @abstractmethod
-    def begin_transaction(self) -> QueryWithParams:
+    def begin_transaction(self, name: str | None = None) -> QueryWithParams:
         ...
 
     @abstractmethod
-    def commit_transaction(self) -> QueryWithParams:
+    def commit_transaction(self, name: str | None = None) -> QueryWithParams:
         ...
 
     @abstractmethod
-    def rollback_transaction(self) -> QueryWithParams:
+    def rollback_transaction(self, name: str | None = None) -> QueryWithParams:
         ...
 
     @abstractmethod

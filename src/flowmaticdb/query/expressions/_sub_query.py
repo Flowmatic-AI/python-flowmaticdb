@@ -5,8 +5,8 @@ from typing import TYPE_CHECKING, Any
 from flowmaticdb.query.expressions._sql import SqlABC
 
 if TYPE_CHECKING:
-    from flowmaticdb.dialects._base import DialectABC
-    from flowmaticdb.query._select import SelectQuery
+    from flowmaticdb.dialects import DialectABC
+    from flowmaticdb.query import SelectQuery
 
 
 class SubQuery(SqlABC):

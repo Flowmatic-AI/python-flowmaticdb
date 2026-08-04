@@ -1,8 +1,7 @@
 from __future__ import annotations
 
-from flowmaticdb.query._join import Join
-from flowmaticdb.query.enums._chain import ChainEnum
-from flowmaticdb.query.enums._join import JoinEnum
+from flowmaticdb.query import Join
+from flowmaticdb.query.enums import ChainEnum, JoinEnum
 
 
 def test_join_creation() -> None:

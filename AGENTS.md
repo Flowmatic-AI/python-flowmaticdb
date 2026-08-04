@@ -52,11 +52,11 @@ Within each package, modules named with a leading underscore (e.g. `flowmaticdb.
 - `PsycopgResult` is exported from `flowmaticdb.result` — `from flowmaticdb.result import PsycopgResult`.
 - `raw()`, `identifier()`, `alias()`, `expression()`, `sub_query()`, `current_timestamp()`, `now()` — module-level functions exported from the top-level package: `from flowmaticdb import raw`.
 - Snapshot a result: `from flowmaticdb.result import snapshot_result`.
-- The one deliberate exception: `flowmaticdb.exceptions` stays a public module (matches the near-universal `requests.exceptions`-style convention).
+- Exception classes: `from flowmaticdb import QueryError` — they live in `_exceptions.py` and are re-exported from the top-level package.
 
 ## Key conventions
 
-- **Leading underscore = private** — a `_`-prefixed module name marks an implementation detail. A package's public API is exactly its `__init__.py` `__all__`; import from the package, never from a module inside it. Exception: `flowmaticdb.exceptions` stays public.
+- **Leading underscore = private** — a `_`-prefixed module name marks an implementation detail. A package's public API is exactly its `__init__.py` `__all__`; import from the package, never from a module inside it. This holds without exception, including `_exceptions.py` and `_helpers.py`.
 - **ABCs over Protocols** — nominal subtyping (`abc.ABC`) used everywhere.
 - **Mixins over traits** — multiple inheritance with `WhereMixin`, `HavingMixin`, etc.
 - **Fluent API returns `Self`** — all query builder methods return `Self` for chaining.

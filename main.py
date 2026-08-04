@@ -4,10 +4,7 @@ import datetime
 import time
 
 from flowmaticdb.database import DB
-from flowmaticdb.query._condition_group import HavingGroup, WhereGroup
 from flowmaticdb.query.enums import ReferentialActionEnum
-from flowmaticdb.query.enums._type import TypeEnum
-from flowmaticdb.query.expressions._excluded import Values
 
 
 def debug_callback(query: str, starttime: float, error: str | None):
@@ -217,16 +214,16 @@ bigQuery = (
     .having_group(
         lambda g: (
             g
-            .where_greater_than("score", 1000)
-            .or_where_group(
+            .having_greater_than("score", 1000)
+            .or_having_group(
                 lambda g2: g2
-                .where_equals("vip", True)
-                .where_in("tier", ["gold", "platinum"])
+                .having_equals("vip", True)
+                .having_in("tier", ["gold", "platinum"])
             )
         )
     )
     .or_having_not_group(
-        lambda g: g.where_equals("status", "internal")
+        lambda g: g.having_equals("status", "internal")
     )
     .having_raw("AVG(rating) >= ?", [4.5])
     .or_having_raw("MAX(logins) > 100")

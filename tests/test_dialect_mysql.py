@@ -1,14 +1,10 @@
 from __future__ import annotations
 
-import pytest
-
-from flowmaticdb._query_with_params import QueryWithParams
-from flowmaticdb.dialects._mysql import MySQLDialect
-from flowmaticdb.exceptions import QueryError
-from flowmaticdb.query._condition import Condition
-from flowmaticdb.query._on_conflict import OnConflict
-from flowmaticdb.query.enums._condition import ConditionEnum
-from flowmaticdb.query.enums._type import TypeEnum
+from flowmaticdb import QueryWithParams
+from flowmaticdb.dialects import MySQLDialect
+from flowmaticdb.query import Condition, OnConflict
+from flowmaticdb.query.ddl import AddColumn, Column, DropConstraint, RenameColumn
+from flowmaticdb.query.enums import ConditionEnum, TypeEnum
 
 
 def test_mysql_select(mysql_dialect: MySQLDialect) -> None:
@@ -44,7 +40,7 @@ def test_mysql_placeholder(mysql_dialect: MySQLDialect) -> None:
 
 def test_mysql_on_duplicate_key_update(mysql_dialect: MySQLDialect) -> None:
     """Verify ON DUPLICATE KEY UPDATE with VALUES(col)."""
-    from flowmaticdb.query.expressions._excluded import Values
+    from flowmaticdb.query.expressions import Values
     updates = {"name": Values()}
     qwp: QueryWithParams = mysql_dialect.insert(
         table="users",
@@ -115,11 +111,9 @@ def test_mysql_on_duplicate_key_update_last_insert_id_all(
         last_insert_id="id",
     )
     assert "`id` = LAST_INSERT_ID(`id`)" in qwp.query
-    # id should NOT appear in a VALUES() clause — it's handled by LAST_INSERT_ID
     assert "VALUES(`id`)" not in qwp.query
     assert "VALUES(`name`)" in qwp.query
     assert "VALUES(`email`)" in qwp.query
-    # LAST_INSERT_ID clause must come first
     update_part = qwp.query.split("ON DUPLICATE KEY UPDATE ")[1]
     assert update_part.startswith("`id` = LAST_INSERT_ID(`id`)")
 
@@ -127,7 +121,11 @@ def test_mysql_on_duplicate_key_update_last_insert_id_all(
 def test_mysql_on_duplicate_key_update_last_insert_id_specific(
     mysql_dialect: MySQLDialect,
 ) -> None:
-    """last_insert_id with specific updates should prepend LAST_INSERT_ID(id)."""
+    """last_insert_id with specific updates appends its own clause: this
+    mirrors PHP's plain array-key assignment ($updates[$lastInsertId] = ...),
+    which only preserves a column's original position when it already
+    existed in on_conflict.updates. Here 'id' is new, so it is appended
+    *after* the caller-supplied 'name' update, not prepended."""
     updates = {"name": "UpdatedName"}
     qwp: QueryWithParams = mysql_dialect.insert(
         table="users",
@@ -138,34 +136,120 @@ def test_mysql_on_duplicate_key_update_last_insert_id_specific(
     )
     assert "`id` = LAST_INSERT_ID(`id`)" in qwp.query
     assert "`name` = ?" in qwp.query
-    # LAST_INSERT_ID clause must come first
     update_part = qwp.query.split("ON DUPLICATE KEY UPDATE ")[1]
-    assert update_part.startswith("`id` = LAST_INSERT_ID(`id`)")
+    assert update_part.startswith("`name` = ?")
+    assert update_part.endswith("`id` = LAST_INSERT_ID(`id`)")
 
 
-def test_mysql_no_returning(mysql_dialect: MySQLDialect) -> None:
-    """RETURNING clause should raise QueryError."""
-    with pytest.raises(QueryError, match="RETURNING"):
-        mysql_dialect.insert(
-            table="users",
-            values=[{"name": "John"}],
-            on_conflict=None,
-            returning=["id"],
-            last_insert_id=None,
-        )
+def test_mysql_on_duplicate_key_update_do_nothing_with_last_insert_id(
+    mysql_dialect: MySQLDialect,
+) -> None:
+    """DO NOTHING (updates=None) combined with a last_insert_id should NOT
+    become INSERT IGNORE -- MySQLDialect::buildOnConflict only takes the
+    INSERT IGNORE shortcut when no last_insert_id was requested; otherwise it
+    falls through to ON DUPLICATE KEY UPDATE so LAST_INSERT_ID() reflects the
+    pre-existing row."""
+    qwp: QueryWithParams = mysql_dialect.insert(
+        table="users",
+        values=[{"id": 1, "name": "John"}],
+        on_conflict=OnConflict(conflict=["id"], updates=None),
+        returning=None,
+        last_insert_id="id",
+    )
+    assert not qwp.query.startswith("INSERT IGNORE")
+    assert "ON DUPLICATE KEY UPDATE `id` = LAST_INSERT_ID(`id`)" in qwp.query
+
+
+def test_mysql_no_returning_is_silently_dropped(mysql_dialect: MySQLDialect) -> None:
+    """MySQL has no native RETURNING support; MySQLDialect::buildReturning
+    (via the base) is a silent no-op, never a raise."""
+    qwp = mysql_dialect.insert(
+        table="users",
+        values=[{"name": "John"}],
+        on_conflict=None,
+        returning=["id"],
+        last_insert_id=None,
+    )
+    assert "RETURNING" not in qwp.query
+
+
+def test_mysql_returning_skipped_on_update_even_when_mariadb_supports_it() -> None:
+    """MySQLDialect::buildReturning always skips RETURNING for UPDATE
+    queries specifically, even on a MariaDB version that otherwise supports
+    it (an INSERT on the very same dialect instance still gets RETURNING)."""
+    mariadb = MySQLDialect(version="10.5.0", is_mariadb=True)
+    assert mariadb.returning is True
+
+    update_qwp = mariadb.update(
+        table="users",
+        updates={"name": "Jane"},
+        where=None,
+        returning=["id"],
+    )
+    assert "RETURNING" not in update_qwp.query
+
+    insert_qwp = mariadb.insert(
+        table="users",
+        values=[{"name": "Jane"}],
+        on_conflict=None,
+        returning=["id"],
+        last_insert_id=None,
+    )
+    assert "RETURNING" in insert_qwp.query
+
+
+def test_mysql_on_conflict_gating_matches_mariadb_vs_mysql(mysql_dialect: MySQLDialect) -> None:
+    """MySQLDialect::onConflict(): MariaDB is always true; plain MySQL is
+    gated on version >= 4.1."""
+    assert mysql_dialect.on_conflict is True
+
+    old_mysql = MySQLDialect(version="4.0.0")
+    assert old_mysql.on_conflict is False
+
+    old_mariadb = MySQLDialect(version="4.0.0", is_mariadb=True)
+    assert old_mariadb.on_conflict is True
+
+
+def test_mysql_lateral_excludes_mariadb() -> None:
+    """MySQLDialect::lateral() requires the MySQL driver specifically, not
+    MariaDB, even past the 8.0.14 version threshold."""
+    mariadb = MySQLDialect(version="8.0.14", is_mariadb=True)
+    assert mariadb.lateral is False
+
+    mysql = MySQLDialect(version="8.0.14", is_mariadb=False)
+    assert mysql.lateral is True
 
 
 def test_mysql_type_mapping(mysql_dialect: MySQLDialect) -> None:
-    assert mysql_dialect.type(TypeEnum.BOOL) == "TINYINT(1)"
-    assert mysql_dialect.type(TypeEnum.INT) == "INT"
+    assert mysql_dialect.type(TypeEnum.BOOL) == "TINYINT"
+    assert mysql_dialect.type(TypeEnum.INT) == "INTEGER"
+    assert mysql_dialect.type(TypeEnum.INT, 64) == "BIGINT"
     assert mysql_dialect.type(TypeEnum.FLOAT) == "FLOAT"
     assert mysql_dialect.type(TypeEnum.FLOAT, 64) == "DOUBLE"
     assert mysql_dialect.type(TypeEnum.STRING) == "VARCHAR(255)"
     assert mysql_dialect.type(TypeEnum.STRING, 64) == "VARCHAR(64)"
+    assert mysql_dialect.type(TypeEnum.STRING, 65536) == "MEDIUMTEXT"
+    assert mysql_dialect.type(TypeEnum.STRING, 16777216) == "LONGTEXT"
     assert mysql_dialect.type(TypeEnum.DATETIME) == "DATETIME"
+    assert mysql_dialect.type(TypeEnum.DATETIME, 6) == "DATETIME(6)"
+
+
+def test_mysql_type_datetime_clamps_fractional_seconds_precision(mysql_dialect: MySQLDialect) -> None:
+    """Reviewed deviation from MySQLDialect.php:237: MySQL's fractional-
+    seconds precision (fsp) is only valid in 0-6, but callers pass
+    `bits`-style sizes elsewhere in this API (e.g. 32, 64). A faithful port
+    of the PHP `sprintf('DATETIME(%d)', $size)` would emit invalid SQL like
+    DATETIME(64); size is clamped to MySQL's real maximum of 6 instead."""
+    assert mysql_dialect.type(TypeEnum.DATETIME, None) == "DATETIME"
+    assert mysql_dialect.type(TypeEnum.DATETIME, 0) == "DATETIME"
+    assert mysql_dialect.type(TypeEnum.DATETIME, 6) == "DATETIME(6)"
+    assert mysql_dialect.type(TypeEnum.DATETIME, 7) == "DATETIME(6)"
+    assert mysql_dialect.type(TypeEnum.DATETIME, 64) == "DATETIME(6)"
 
 
 def test_mysql_bool_casting(mysql_dialect: MySQLDialect) -> None:
+    """PHP doesn't override castBool/parseBool for MySQL at all -- these all
+    come from the base implementation."""
     assert mysql_dialect.cast_bool(True) == 1
     assert mysql_dialect.cast_bool(False) == 0
     assert mysql_dialect.parse_bool(True) is True
@@ -176,21 +260,51 @@ def test_mysql_bool_casting(mysql_dialect: MySQLDialect) -> None:
     assert mysql_dialect.parse_bool("false") is False
     assert mysql_dialect.parse_bool("1") is True
     assert mysql_dialect.parse_bool("yes") is True
-    assert mysql_dialect.parse_bool("on") is True
 
 
 def test_mysql_auto_increment_column(mysql_dialect: MySQLDialect) -> None:
-    col: dict[str, object] = {
-        "name": "id",
-        "type": TypeEnum.INT,
-        "auto_increment": True,
-    }
+    """_build_column() alone only adds AUTO_INCREMENT -- MySQLDialect never
+    adds PRIMARY KEY itself; that comes from create_table() folding the
+    auto-increment column into the primary key list instead."""
+    col = Column(name="id", type=TypeEnum.INT, auto_increment=True)
     col_def: str = mysql_dialect._build_column(col)
     assert "AUTO_INCREMENT" in col_def
-    assert "PRIMARY KEY" in col_def
+    assert "PRIMARY KEY" not in col_def
 
 
-def test_mysql_regex_condition(mysql_dialect: MySQLDialect) -> None:
+def test_mysql_auto_increment_column_not_null_and_default_preserved(
+    mysql_dialect: MySQLDialect,
+) -> None:
+    """The old _build_column() early-returned for auto_increment columns,
+    silently dropping NOT NULL/DEFAULT. MySQLDialect::buildColumn appends
+    AUTO_INCREMENT *after* calling parent::buildColumn(), so those fragments
+    must still be present."""
+    col = Column(name="id", type=TypeEnum.INT, auto_increment=True, not_null=True)
+    col_def: str = mysql_dialect._build_column(col)
+    assert col_def == "`id` INTEGER NOT NULL AUTO_INCREMENT"
+
+
+def test_mysql_create_table_auto_increment_adds_primary_key(
+    mysql_dialect: MySQLDialect,
+) -> None:
+    """MySQLDialect::createTable folds auto-increment columns into the
+    primary key list even when add_primary_key was not explicitly
+    requested (primary_keys=None here)."""
+    qwp: QueryWithParams = mysql_dialect.create_table(
+        if_not_exists=False,
+        table="users",
+        columns=[
+            Column(name="id", type=TypeEnum.INT, auto_increment=True),
+            Column(name="other_pk", type=TypeEnum.INT),
+        ],
+        primary_keys=["other_pk"],
+    )
+    assert "PRIMARY KEY (`other_pk`, `id`)" in qwp.query
+
+
+def test_mysql_regex_condition_uses_function_form_on_mysql8(mysql_dialect: MySQLDialect) -> None:
+    """MySQLDialect::buildConditionRegex: plain MySQL >= 8.0 uses the shared
+    regexp_like() function form, not the REGEXP operator."""
     cond = Condition(
         condition=ConditionEnum.REGEX,
         identifier="email",
@@ -200,11 +314,11 @@ def test_mysql_regex_condition(mysql_dialect: MySQLDialect) -> None:
     params: list[object] = []
     mysql_dialect._build_condition(parts, params, cond)
     result = "".join(parts)
-    assert "REGEXP" in result
-    assert "`email`" in result
+    assert result.startswith("regexp_like(`email`, ")
+    assert "REGEXP" not in result
 
 
-def test_mysql_not_regex_condition(mysql_dialect: MySQLDialect) -> None:
+def test_mysql_not_regex_condition_uses_function_form_on_mysql8(mysql_dialect: MySQLDialect) -> None:
     cond = Condition(
         condition=ConditionEnum.NOT_REGEX,
         identifier="email",
@@ -214,7 +328,60 @@ def test_mysql_not_regex_condition(mysql_dialect: MySQLDialect) -> None:
     params: list[object] = []
     mysql_dialect._build_condition(parts, params, cond)
     result = "".join(parts)
-    assert "NOT REGEXP" in result
+    assert result == "NOT regexp_like(`email`, ?, ?)"
+
+
+def test_mysql_regex_condition_uses_operator_form_on_mariadb() -> None:
+    """MySQLDialect::buildConditionRegex: MariaDB always uses the
+    REGEXP/NOT REGEXP operator, regardless of version."""
+    mariadb = MySQLDialect(version="10.5.0", is_mariadb=True)
+    cond = Condition(condition=ConditionEnum.REGEX, identifier="email", value="^a@b$")
+    parts: list[str] = []
+    params: list[object] = []
+    mariadb._build_condition(parts, params, cond)
+    result = "".join(parts)
+    assert result == "`email` REGEXP ?"
+
+    not_cond = Condition(condition=ConditionEnum.NOT_REGEX, identifier="email", value="^a@b$")
+    parts2: list[str] = []
+    params2: list[object] = []
+    mariadb._build_condition(parts2, params2, not_cond)
+    assert "".join(parts2) == "`email` NOT REGEXP ?"
+
+
+def test_mysql_regex_condition_operator_form_via_option(mysql_dialect: MySQLDialect) -> None:
+    """The use_regexp option forces the operator form even on MySQL 8+."""
+    mysql = MySQLDialect(version="8.0.0", options={"use_regexp": True})
+    cond = Condition(condition=ConditionEnum.REGEX, identifier="email", value="^a@b$")
+    parts: list[str] = []
+    params: list[object] = []
+    mysql._build_condition(parts, params, cond)
+    assert "".join(parts) == "`email` REGEXP ?"
+
+
+def test_mysql_like_condition_case_sensitive_uses_binary(mysql_dialect: MySQLDialect) -> None:
+    """MySQLDialect::buildConditionLike: the default (case_insensitive=False)
+    request needs LIKE BINARY to force a byte-wise, collation-independent
+    comparison; case_insensitive=True can use plain LIKE."""
+    cond = Condition(condition=ConditionEnum.LIKE, identifier="name", value="%john%")
+    parts: list[str] = []
+    params: list[object] = []
+    mysql_dialect._build_condition(parts, params, cond)
+    assert "".join(parts) == "`name` LIKE BINARY ?"
+
+    ci_cond = Condition(
+        condition=ConditionEnum.LIKE, identifier="name", value="%john%", case_insensitive=True
+    )
+    parts2: list[str] = []
+    params2: list[object] = []
+    mysql_dialect._build_condition(parts2, params2, ci_cond)
+    assert "".join(parts2) == "`name` LIKE ?"
+
+    not_cond = Condition(condition=ConditionEnum.NOT_LIKE, identifier="name", value="%john%")
+    parts3: list[str] = []
+    params3: list[object] = []
+    mysql_dialect._build_condition(parts3, params3, not_cond)
+    assert "".join(parts3) == "`name` NOT LIKE BINARY ?"
 
 
 def test_mysql_no_distinct_on(mysql_dialect: MySQLDialect) -> None:
@@ -228,9 +395,16 @@ def test_mysql_escape_identifier(mysql_dialect: MySQLDialect) -> None:
 
 
 def test_mysql_escape_string(mysql_dialect: MySQLDialect) -> None:
-    assert mysql_dialect.escape_string("it's") == "it''s"
-    assert mysql_dialect.escape_string("back\\slash") == "back\\\\slash"
-    assert mysql_dialect.escape_string("normal") == "normal"
+    """MySQLDialect::ESCAPE_STRING is '"' (double quote), and ESCAPE_CHARS
+    backslash-escapes control characters as well as the quote itself --
+    unlike the ANSI base, which doubles the wrapping quote and only strips
+    NUL bytes."""
+    assert mysql_dialect.escape_string("it's") == "\"it\\'s\""
+    assert mysql_dialect.escape_string("back\\slash") == '"back\\\\slash"'
+    assert mysql_dialect.escape_string("normal") == '"normal"'
+    assert mysql_dialect.escape_string("line1\nline2\ttab\r\x00\x1a") == (
+        '"line1\\nline2\\ttab\\r\\0\\Z"'
+    )
 
 
 def test_mysql_transaction_syntax(mysql_dialect: MySQLDialect) -> None:
@@ -244,9 +418,9 @@ def test_mysql_create_table(mysql_dialect: MySQLDialect) -> None:
         if_not_exists=True,
         table="users",
         columns=[
-            {"name": "id", "type": TypeEnum.INT, "auto_increment": True},
-            {"name": "name", "type": TypeEnum.STRING, "bits": 100, "not_null": True},
-            {"name": "email", "type": TypeEnum.STRING, "bits": 255},
+            Column(name="id", type=TypeEnum.INT, auto_increment=True),
+            Column(name="name", type=TypeEnum.STRING, bits=100, not_null=True),
+            Column(name="email", type=TypeEnum.STRING, bits=255),
         ],
     )
     query = qwp.query
@@ -265,40 +439,30 @@ def test_mysql_create_table(mysql_dialect: MySQLDialect) -> None:
 def test_mysql_alter_add_column(mysql_dialect: MySQLDialect) -> None:
     qwp: QueryWithParams = mysql_dialect._build_alter(
         "users",
-        {
-            "type": "add_column",
-            "column": {"name": "age", "type": TypeEnum.INT, "not_null": True},
-        },
+        AddColumn(name="age", type=TypeEnum.INT, not_null=True),
     )
-    assert qwp.query == "ALTER TABLE `users` ADD COLUMN `age` INT NOT NULL"
+    assert qwp.query == "ALTER TABLE `users` ADD COLUMN `age` INTEGER NOT NULL"
 
 
 def test_mysql_alter_rename_column(mysql_dialect: MySQLDialect) -> None:
     qwp: QueryWithParams = mysql_dialect._build_alter(
         "users",
-        {"type": "rename_column", "old_name": "name", "new_name": "username"},
+        RenameColumn(old_name="name", new_name="username"),
     )
     assert qwp.query == "ALTER TABLE `users` RENAME COLUMN `name` TO `username`"
 
 
-def test_mysql_alter_drop_primary_key(mysql_dialect: MySQLDialect) -> None:
-    qwp: QueryWithParams = mysql_dialect._build_alter(
-        "users",
-        {"type": "drop_constraint", "constraint_type": "primary_key"},
-    )
-    assert qwp.query == "ALTER TABLE `users` DROP PRIMARY KEY"
-
-
-def test_mysql_alter_drop_foreign_key(mysql_dialect: MySQLDialect) -> None:
+def test_mysql_alter_drop_constraint_always_uses_drop_index(mysql_dialect: MySQLDialect) -> None:
+    """MySQLDialect::buildAlterTableDropConstraint always rewrites
+    'DROP CONSTRAINT name' to 'DROP INDEX name', regardless of what kind of
+    constraint it was -- the AltersMixin.drop_constraint() API (mirroring
+    PHP's AltersTrait::dropConstraint()) only ever carries a bare name, no
+    constraint-kind discriminator."""
     qwp: QueryWithParams = mysql_dialect._build_alter(
         "orders",
-        {
-            "type": "drop_constraint",
-            "constraint_type": "foreign_key",
-            "name": "fk_user_id",
-        },
+        DropConstraint(name="fk_user_id"),
     )
-    assert qwp.query == "ALTER TABLE `orders` DROP FOREIGN KEY `fk_user_id`"
+    assert qwp.query == "ALTER TABLE `orders` DROP INDEX `fk_user_id`"
 
 
 def test_mysql_insert_with_params(mysql_dialect: MySQLDialect) -> None:
@@ -321,8 +485,8 @@ def test_mysql_insert_with_params(mysql_dialect: MySQLDialect) -> None:
 
 def test_mysql_update_with_params(mysql_dialect: MySQLDialect) -> None:
     """Verify UPDATE generates ? placeholders."""
-    from flowmaticdb.query._condition import Condition
-    from flowmaticdb.query.enums._condition import ConditionEnum
+    from flowmaticdb.query import Condition
+    from flowmaticdb.query.enums import ConditionEnum
 
     where = [
         Condition(condition=ConditionEnum.EQUALS, identifier="id", value=42),
@@ -340,8 +504,8 @@ def test_mysql_update_with_params(mysql_dialect: MySQLDialect) -> None:
 
 def test_mysql_delete_with_params(mysql_dialect: MySQLDialect) -> None:
     """Verify DELETE generates ? placeholders."""
-    from flowmaticdb.query._condition import Condition
-    from flowmaticdb.query.enums._condition import ConditionEnum
+    from flowmaticdb.query import Condition
+    from flowmaticdb.query.enums import ConditionEnum
 
     where = [
         Condition(condition=ConditionEnum.EQUALS, identifier="id", value=99),
@@ -372,12 +536,11 @@ def test_mysql_drop_table(mysql_dialect: MySQLDialect) -> None:
 
 def test_mysql_version_gating(mysql_dialect: MySQLDialect) -> None:
     assert mysql_dialect.distinct_on is False
-    assert mysql_dialect.lateral is False  # 8.0.0 < 8.0.14
-    assert mysql_dialect.on_conflict is False
+    assert mysql_dialect.lateral is False
+    assert mysql_dialect.on_conflict is True
     assert mysql_dialect.returning is False
     assert mysql_dialect.savepoints is True
 
-    # 8.0.14+ enables lateral
     mysql_8014 = MySQLDialect(version="8.0.14")
     assert mysql_8014.lateral is True
 

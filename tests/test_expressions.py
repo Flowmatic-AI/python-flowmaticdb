@@ -1,11 +1,7 @@
 from __future__ import annotations
 
-from flowmaticdb.dialects._sql_dialect import SQLDialect
-from flowmaticdb.query.expressions._alias import Alias
-from flowmaticdb.query.expressions._current_timestamp import CurrentTimestamp
-from flowmaticdb.query.expressions._expression import Expression
-from flowmaticdb.query.expressions._identifier import Identifier
-from flowmaticdb.query.expressions._raw import Raw
+from flowmaticdb.dialects import SQLDialect
+from flowmaticdb.query.expressions import Alias, CurrentTimestamp, Expression, Identifier, Raw
 
 
 def test_raw_expression(sql_dialect: SQLDialect) -> None:

@@ -5,47 +5,52 @@ from typing import Any
 from flowmaticdb.result._base import ResultABC
 
 
+def _sqlite_runtime_type(value: Any) -> str:
+    if value is None:
+        return "NULL"
+    if isinstance(value, int):
+        return "INTEGER"
+    if isinstance(value, float):
+        return "FLOAT"
+    if isinstance(value, bytes):
+        return "BLOB"
+    return "TEXT"
+
+
 class SQLite3Result(ResultABC):
     def __init__(self, cursor: Any) -> None:
         self._cursor = cursor
         self._columns_cache: dict[str, str] | None = None
 
     def columns(self) -> dict[str, str]:
-        if self._columns_cache is not None:
-            return dict(self._columns_cache)
+        if self._columns_cache is None:
+            self._columns_cache = self._describe()
+        return dict(self._columns_cache)
+
+    def _describe(self) -> dict[str, str]:
         result: dict[str, str] = {}
         if self._cursor.description:
             for desc in self._cursor.description:
-                name = desc[0]
-                type_code = desc[1]
-                type_name = _SQLITE_TYPE_NAMES.get(type_code, "TEXT")
-                result[name] = type_name
-        self._columns_cache = result
-        return dict(result)
+                result[desc[0]] = "NULL"
+        return result
+
+    def _observe_row(self, row: Any) -> None:
+        if self._columns_cache is None:
+            self._columns_cache = self._describe()
+        for name in self._columns_cache:
+            self._columns_cache[name] = _sqlite_runtime_type(row[name])
 
     def fetch_dict(self) -> dict[str, Any] | None:
         row = self._cursor.fetchone()
         if row is None:
             return None
-        if self._columns_cache is None:
-            self.columns()
-        if self._columns_cache:
-            return dict(zip(self._columns_cache.keys(), row))
+        self._observe_row(row)
         return dict(row)
 
     def fetch_dicts(self) -> list[dict[str, Any]]:
         rows = self._cursor.fetchall()
-        if self._columns_cache is None:
-            self.columns()
-        if not self._columns_cache:
-            return [dict(r) for r in rows]
-        cols = list(self._columns_cache.keys())
-        return [dict(zip(cols, row)) for row in rows]
-
-_SQLITE_TYPE_NAMES: dict[int, str] = {
-    1: "INTEGER",
-    2: "FLOAT",
-    3: "TEXT",
-    4: "BLOB",
-    5: "NULL",
-}
+        if rows:
+            self._observe_row(rows[0])
+        elif self._columns_cache is None:
+            self._columns_cache = self._describe()
+        return [dict(row) for row in rows]

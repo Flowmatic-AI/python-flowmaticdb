@@ -1,7 +1,8 @@
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Self, cast
+from typing import TYPE_CHECKING, Any, Self
 
+from flowmaticdb._query_with_params import QueryWithParams
 from flowmaticdb.query._having_mixin import HavingMixin
 from flowmaticdb.query._joins_mixin import JoinsMixin
 from flowmaticdb.query._query import Query
@@ -15,14 +16,14 @@ from flowmaticdb.query._simple_mixins import (
     UnionMixin,
 )
 from flowmaticdb.query._where_mixin import WhereMixin
-from flowmaticdb.result._base import ResultABC
+from flowmaticdb.result import ResultABC
 
 if TYPE_CHECKING:
-    from flowmaticdb._query_with_params import QueryWithParams
-    from flowmaticdb.database._abc import DatabaseABC
-    from flowmaticdb.dialects._base import DialectABC
-    from flowmaticdb.query.expressions._alias import Alias
-    from flowmaticdb.query.expressions._sub_query import SubQuery
+    from flowmaticdb.database import DatabaseABC
+    from flowmaticdb.dialects import DialectABC
+    from flowmaticdb.query._order_by import OrderBy
+    from flowmaticdb.query._union import Union
+    from flowmaticdb.query.expressions import Alias, SubQuery
 
 
 class SelectQuery(
@@ -31,7 +32,18 @@ class SelectQuery(
     OrderByMixin, LimitMixin, OffsetMixin, UnionMixin,
 ):
     def __init__(self, dialect: DialectABC, table: str | list[str] | Alias | SubQuery, database: DatabaseABC) -> None:
-        super().__init__(dialect, table, database=database)
+        super().__init__(dialect, table, database)
+
+        self.where: list[Any] = []
+        self.having: list[Any] = []
+        self.joins: list[Any] = []
+        self._columns_list: list[Any] | None = None
+        self._distinct: list[Any] | None = None
+        self._group_by_cols: list[Any] | None = None
+        self._order_by_list: list[OrderBy] | None = None
+        self._limit_val: int | None = None
+        self._offset_val: int | None = None
+        self._unions_list: list[Union] | None = None
 
     def table(self, table: str | list[str] | Alias | SubQuery) -> Self:
         self._table = table
@@ -53,7 +65,11 @@ class SelectQuery(
         )
 
     def execute(self, emulate_prepare: bool = False) -> ResultABC:
-        return cast(ResultABC, super().execute(emulate_prepare))
+        result = super().execute(emulate_prepare)
+        if not isinstance(result, ResultABC):
+            msg = "Expected a single ResultABC, got a list"
+            raise TypeError(msg)
+        return result
 
     def count(self, emulate_prepare: bool = False) -> int:
         inner_qwp = self.to_query_with_params()

@@ -4,8 +4,10 @@ import re
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
+from flowmaticdb._exceptions import QueryWithParamsError
+
 if TYPE_CHECKING:
-    from flowmaticdb.dialects._base import DialectABC
+    from flowmaticdb.dialects import DialectABC
 
 REGEX_PATTERN = re.compile(
     r"""(?x)
@@ -56,12 +58,12 @@ class QueryWithParams:
         def _replacer(match: re.Match[str]) -> str:
             nonlocal param_idx
             if match.group(1) is not None or match.group(2) is not None:
-                if param_idx < len(self.params):
-                    value = self.params[param_idx]
-                    casted = dialect.cast_to_query(value)
-                    param_idx += 1
-                    return casted
-                return "?"
+                if param_idx >= len(self.params):
+                    raise QueryWithParamsError("placeholder and param count do not match")
+                value = self.params[param_idx]
+                casted = dialect.cast_to_query(value)
+                param_idx += 1
+                return casted
             return match.group(0)
 
         return REGEX_PATTERN.sub(_replacer, self.query)

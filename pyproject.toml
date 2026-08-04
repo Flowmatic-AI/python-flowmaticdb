@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "flowmaticdb"
-version = "1.2.1"
+version = "2.0.0"
 description = "A Python database abstraction layer supporting PostgreSQL, SQLite, and MySQL."
 readme = "README.md"
 requires-python = ">=3.11"
@@ -50,6 +50,9 @@ dev = [
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.setuptools.package-data]
+flowmaticdb = ["py.typed"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

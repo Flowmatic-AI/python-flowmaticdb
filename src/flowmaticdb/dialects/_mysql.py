@@ -1,18 +1,36 @@
 from __future__ import annotations
 
-from typing import Any
+import dataclasses
+from collections.abc import Mapping
+from typing import Any, ClassVar
 
 from flowmaticdb._query_with_params import QueryWithParams
 from flowmaticdb.dialects._sql_dialect import SQLDialect
-from flowmaticdb.exceptions import QueryError
-from flowmaticdb.query._condition import Condition
-from flowmaticdb.query._on_conflict import OnConflict
-from flowmaticdb.query.enums._type import TypeEnum
-from flowmaticdb.query.expressions._excluded import Values
-from flowmaticdb.query.expressions._sql import SqlABC
+from flowmaticdb.query import Condition, OnConflict
+from flowmaticdb.query.ddl import AlterColumn, Column, ConstraintABC, DropConstraint
+from flowmaticdb.query.enums import ConditionEnum, TypeEnum
+from flowmaticdb.query.expressions import Raw, SqlABC, Values
 
 
 class MySQLDialect(SQLDialect):
+    CAST_TYPES: ClassVar[Mapping[str, str]] = {
+        "bool": "UNSIGNED",
+        "int": "SIGNED",
+        "float": "DECIMAL",
+        "string": "CHAR",
+    }
+
+    escape_chars: ClassVar[Mapping[str, str]] = {
+        "\\": "\\\\",
+        "\n": "\\n",
+        "\r": "\\r",
+        "\t": "\\t",
+        "\0": "\\0",
+        "\b": "\\b",
+        "\x1a": "\\Z",
+        "'": "\\'",
+    }
+
     def __init__(self, version: str = "8.0.0", options: dict[str, Any] | None = None, is_mariadb: bool = False) -> None:
         super().__init__(version=version, options=options)
         self.bool = False
@@ -23,25 +41,42 @@ class MySQLDialect(SQLDialect):
         self.savepoints = True
         self.generated_by_default_as_identity = False
         self.escape_identifier_char = "`"
-        self.escape_string_char = "'"
+        self.escape_string_char = '"'
         self.escape_ansi = False
-        self.datetime_format = "%Y-%m-%d %H:%M:%S"
+        self.datetime_format = "%Y-%m-%d %H:%M:%S.%f"
         self._is_mariadb = is_mariadb
         self._version_gate()
 
     def _version_gate(self) -> None:
-        self.lateral = self._version >= 80014
-        if self._is_mariadb and self._version >= 100500:
-            self.returning = True
+        self.lateral = (not self._is_mariadb) and self._version >= 80014
+        self.on_conflict = True if self._is_mariadb else self._version >= 40100
+        self.returning = self._is_mariadb and self._version >= 100500
 
-    def begin_transaction(self) -> QueryWithParams:
+    def begin_transaction(self, name: str | None = None) -> QueryWithParams:
         return QueryWithParams(query="START TRANSACTION")
 
-    def commit_transaction(self) -> QueryWithParams:
+    def commit_transaction(self, name: str | None = None) -> QueryWithParams:
         return QueryWithParams(query="COMMIT")
 
-    def rollback_transaction(self) -> QueryWithParams:
+    def rollback_transaction(self, name: str | None = None) -> QueryWithParams:
         return QueryWithParams(query="ROLLBACK")
+
+    def create_table(
+        self,
+        if_not_exists: bool,
+        table: Any,
+        columns: list[Column],
+        primary_keys: list[str] | None = None,
+        constraints: list[ConstraintABC] | None = None,
+    ) -> QueryWithParams:
+        merged_primary_keys = list(primary_keys) if primary_keys else []
+        for col in columns:
+            if not col.auto_increment:
+                continue
+            if col.name not in merged_primary_keys:
+                merged_primary_keys.append(col.name)
+
+        return super().create_table(if_not_exists, table, columns, merged_primary_keys, constraints)
 
     def _build_on_conflict(
         self,
@@ -51,216 +86,115 @@ class MySQLDialect(SQLDialect):
         values: list[dict[str, Any]],
         last_insert_id: str | None,
     ) -> str:
+        if not self.on_conflict:
+            return ""
+
         if on_conflict is None:
             return ""
 
-        if on_conflict.updates is None:
+        insert_ignore = on_conflict.updates is None
+
+        if insert_ignore and not last_insert_id:
             assert query[0] == "INSERT INTO ", (
                 "Expected query to start with 'INSERT INTO '"
             )
             query[0] = "INSERT IGNORE INTO "
             return ""
 
-        query.append(" ON DUPLICATE KEY UPDATE ")
-
-        sets: list[str] = []
+        updates: dict[str, Any] = {}
+        if not insert_ignore:
+            if on_conflict.updates:
+                updates = dict(on_conflict.updates)
+            else:
+                columns: list[str] = []
+                for val_set in values:
+                    for col in val_set:
+                        if col not in columns:
+                            columns.append(col)
+                updates = {col: Values() for col in columns}
 
         if last_insert_id is not None:
-            col = self.escape_identifier(last_insert_id)
-            sets.append(f"{col} = LAST_INSERT_ID({col})")
+            updates[last_insert_id] = Raw(
+                f"LAST_INSERT_ID({self.escape_identifier(last_insert_id)})"
+            )
 
-        if not on_conflict.updates:
-            if values:
-                for col in values[0]:
-                    if col == last_insert_id:
-                        continue
-                    esc = self.escape_identifier(col)
-                    sets.append(f"{esc} = VALUES({esc})")
-        else:
-            for col, val in on_conflict.updates.items():
-                if isinstance(val, Values):
-                    esc = self.escape_identifier(col)
-                    sets.append(f"{esc} = VALUES({esc})")
-                else:
-                    val_q: list[str] = []
-                    val_p: list[Any] = []
-                    self._build_question_marks(val_q, val_p, val)
-                    sets.append(f"{self.escape_identifier(col)} = {''.join(val_q)}")
-                    params.extend(val_p)
+        sets: list[str] = []
+        for col, val in updates.items():
+            esc = self.escape_identifier(col)
+            if isinstance(val, Values):
+                sets.append(f"{esc} = VALUES({esc})")
+            elif isinstance(val, SqlABC):
+                sets.append(f"{esc} = {val.raw_sql(self)}")
+            else:
+                val_q: list[str] = []
+                val_p: list[Any] = []
+                self._build_question_marks(val_q, val_p, val)
+                sets.append(f"{esc} = {''.join(val_q)}")
+                params.extend(val_p)
 
+        query.append(" ON DUPLICATE KEY UPDATE ")
         query.append(", ".join(sets))
 
         return ""
 
     def _build_returning(self, query: list[str], returning: list[str] | None) -> None:
-        if returning is not None and returning:
-            if not self.returning:
-                raise QueryError("RETURNING is not supported by MySQL")
-            query.append(" RETURNING " + ", ".join(self.escape_identifier(c) for c in returning))
+        if query and query[0].startswith("UPDATE"):
+            return
+        super()._build_returning(query, returning)
 
-    def _build_condition_regex(self, query: list[str], params: list[Any], cond: Condition) -> None:
-        if isinstance(cond.identifier, SqlABC):
-            query.append(cond.identifier.raw_sql(self))
+    def _build_condition_like(self, query: list[str], params: list[Any], cond: Condition) -> None:
+        if self._version < 40000:
+            super()._build_condition_like(query, params, cond)
+            return
+
+        identifier_sql = self._escape_or_sql(cond.identifier)
+        if cond.condition == ConditionEnum.LIKE:
+            operator = "LIKE" if cond.case_insensitive else "LIKE BINARY"
         else:
-            query.append(self.escape_identifier(str(cond.identifier)))
-        is_not = " NOT " if str(cond.condition).startswith("NOT ") else " "
-        query.append(f"{is_not}REGEXP ")
+            operator = "NOT LIKE" if cond.case_insensitive else "NOT LIKE BINARY"
+        query.append(f"{identifier_sql} {operator} ")
         self._build_question_marks(query, params, cond.value)
 
-    def _build_column(self, col: dict[str, Any]) -> str:
-        parts = [self.escape_identifier(col["name"])]
+    def _build_condition_regex(self, query: list[str], params: list[Any], cond: Condition) -> None:
+        use_regexp_option = self.option("use_regexp", False)
+        if not self._is_mariadb and self._version >= 80000 and not use_regexp_option:
+            super()._build_condition_regex(query, params, cond)
+            return
 
-        sql_type = col.get("type", "INTEGER")
-        if isinstance(sql_type, TypeEnum):
-            sql_type = self.type(sql_type, col.get("bits"))
-        parts.append(sql_type)
+        self._build_condition_regex_operator(query, params, cond, "REGEXP", "NOT REGEXP")
 
-        if col.get("auto_increment"):
-            parts.append("AUTO_INCREMENT")
-            parts.append("PRIMARY KEY")
-            return " ".join(parts)
+    def _build_column(self, col: Column) -> str:
+        is_auto_increment = col.auto_increment
+        base_col = dataclasses.replace(col, auto_increment=False) if is_auto_increment else col
+        sql = super()._build_column(base_col)
+        if is_auto_increment:
+            sql += " AUTO_INCREMENT"
+        return sql
 
-        if col.get("not_null"):
-            parts.append("NOT NULL")
-        if col.get("default") is not None:
-            default = col["default"]
-            if isinstance(default, bool):
-                parts.append(f"DEFAULT {self.cast_bool(default)}")
-            elif isinstance(default, int):
-                parts.append(f"DEFAULT {default}")
-            elif isinstance(default, str):
-                parts.append(f"DEFAULT '{self.escape_string(default)}'")
-            elif isinstance(default, SqlABC):
-                parts.append(f"DEFAULT {default.raw_sql(self)}")
-            else:
-                parts.append(f"DEFAULT {default}")
+    def _build_alter_table_alter_column(self, alter: AlterColumn) -> str:
+        fragment = super()._build_alter_table_alter_column(alter)
+        return "MODIFY" + fragment[len("ALTER"):]
 
-        return " ".join(parts)
-
-    def _build_alter(self, table: Any, alter: dict[str, Any]) -> QueryWithParams:
-        atype = alter.get("type", "")
-        table_str = self._table_name(table)
-
-        if atype == "add_column":
-            col = alter.get("column", {})
-            return QueryWithParams(
-                query=f"ALTER TABLE {table_str} ADD COLUMN {self._build_column(col)}"
-            )
-        elif atype == "alter_column":
-            col = alter.get("column", {})
-            col_name = self.escape_identifier(col.get("name", ""))
-            if "type" in col:
-                sql_type = col["type"]
-                if isinstance(sql_type, TypeEnum):
-                    sql_type = self.type(sql_type, col.get("bits"))
-                return QueryWithParams(
-                    query=f"ALTER TABLE {table_str} MODIFY COLUMN {col_name} {sql_type}"
-                )
-            if "default" in col:
-                default = col["default"]
-                return QueryWithParams(
-                    query=f"ALTER TABLE {table_str} ALTER COLUMN {col_name} SET DEFAULT {default}"
-                )
-            if col.get("drop_default"):
-                return QueryWithParams(
-                    query=f"ALTER TABLE {table_str} ALTER COLUMN {col_name} DROP DEFAULT"
-                )
-            if "not_null" in col:
-                raise QueryError(
-                    "MySQL requires MODIFY COLUMN with full type for NOT NULL changes"
-                )
-            return QueryWithParams(query=f"ALTER TABLE {table_str} ALTER COLUMN {col_name}")
-        elif atype == "rename_column":
-            old = alter.get("old_name", "")
-            new = alter.get("new_name", "")
-            return QueryWithParams(
-                query=(
-                    f"ALTER TABLE {table_str} RENAME COLUMN "
-                    f"{self.escape_identifier(old)} TO {self.escape_identifier(new)}"
-                )
-            )
-        elif atype == "drop_column":
-            col = alter.get("column", "")
-            return QueryWithParams(
-                query=f"ALTER TABLE {table_str} DROP COLUMN {self.escape_identifier(col)}"
-            )
-        elif atype == "add_primary_key":
-            cols = alter.get("columns", [])
-            return QueryWithParams(
-                query=(
-                    f"ALTER TABLE {table_str} ADD PRIMARY KEY "
-                    f"({', '.join(self.escape_identifier(c) for c in cols)})"
-                )
-            )
-        elif atype == "add_unique":
-            cols = alter.get("columns", [])
-            name = alter.get("name")
-            name_part = f"CONSTRAINT {self.escape_identifier(name)} " if name else ""
-            return QueryWithParams(
-                query=(
-                    f"ALTER TABLE {table_str} ADD {name_part}UNIQUE "
-                    f"({', '.join(self.escape_identifier(c) for c in cols)})"
-                )
-            )
-        elif atype == "add_foreign_key":
-            cols = alter.get("columns", [])
-            ref_table = alter.get("ref_table", "")
-            ref_cols = alter.get("ref_columns", [])
-            name = alter.get("name")
-            name_part = f"CONSTRAINT {self.escape_identifier(name)} " if name else ""
-            on_delete = alter.get("on_delete", "")
-            on_update = alter.get("on_update", "")
-            fk_parts = [
-                f"{name_part}FOREIGN KEY ({', '.join(self.escape_identifier(c) for c in cols)})",
-                f"REFERENCES {self.escape_identifier(ref_table)} ({', '.join(self.escape_identifier(c) for c in ref_cols)})",
-            ]
-            if on_delete:
-                fk_parts.append(f"ON DELETE {on_delete}")
-            if on_update:
-                fk_parts.append(f"ON UPDATE {on_update}")
-            return QueryWithParams(
-                query=f"ALTER TABLE {table_str} ADD {' '.join(fk_parts)}"
-            )
-        elif atype == "drop_constraint":
-            constraint_type = alter.get("constraint_type", "")
-            if constraint_type == "primary_key":
-                return QueryWithParams(query=f"ALTER TABLE {table_str} DROP PRIMARY KEY")
-            elif constraint_type == "foreign_key":
-                name = alter.get("name", "")
-                return QueryWithParams(
-                    query=f"ALTER TABLE {table_str} DROP FOREIGN KEY {self.escape_identifier(name)}"
-                )
-            elif constraint_type in ("unique", "index"):
-                name = alter.get("name", "")
-                return QueryWithParams(
-                    query=f"ALTER TABLE {table_str} DROP INDEX {self.escape_identifier(name)}"
-                )
-            return QueryWithParams(query=f"ALTER TABLE {table_str}")
-        return QueryWithParams(query=f"ALTER TABLE {table_str}")
-
-    def cast_bool(self, value: bool) -> int:
-        return 1 if value else 0
-
-    def parse_bool(self, value: Any) -> bool:
-        if isinstance(value, bool):
-            return value
-        if isinstance(value, int):
-            return value != 0
-        if isinstance(value, str):
-            return value.lower() in ("true", "1", "t", "yes", "on")
-        return bool(value)
-
-    def escape_string(self, string: str) -> str:
-        result = string.replace("\\", "\\\\")
-        result = result.replace("'", "''")
-        return result
+    def _build_alter_table_drop_constraint(self, alter: DropConstraint) -> str:
+        fragment = super()._build_alter_table_drop_constraint(alter)
+        return fragment[:5] + "INDEX" + fragment[15:]
 
     def type(self, type_enum: TypeEnum, bits: int | None = None) -> str:
-        mapping = {
-            TypeEnum.BOOL: "TINYINT(1)",
-            TypeEnum.INT: "INT",
-            TypeEnum.FLOAT: "DOUBLE" if (bits or 0) > 32 else "FLOAT",
-            TypeEnum.STRING: f"VARCHAR({bits or 255})",
-            TypeEnum.DATETIME: "DATETIME",
-        }
-        return mapping.get(type_enum, "VARCHAR(255)")
+        size = bits or 0
+        if type_enum == TypeEnum.BOOL:
+            return "TINYINT"
+        if type_enum == TypeEnum.FLOAT:
+            return "DOUBLE" if size > 32 else "FLOAT"
+        if type_enum == TypeEnum.STRING:
+            if size > 16777215:
+                return "LONGTEXT"
+            if size > 65535:
+                return "MEDIUMTEXT"
+            if size > 255:
+                return "TEXT"
+            return f"VARCHAR({bits or 255})"
+        if type_enum == TypeEnum.DATETIME:
+            if size <= 0:
+                return "DATETIME"
+            return f"DATETIME({min(size, 6)})"
+        return super().type(type_enum, bits)

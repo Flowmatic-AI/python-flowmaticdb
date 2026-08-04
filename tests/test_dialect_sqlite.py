@@ -2,11 +2,10 @@ from __future__ import annotations
 
 import pytest
 
-from flowmaticdb._query_with_params import QueryWithParams
-from flowmaticdb.dialects._sqlite import SQLiteDialect
-from flowmaticdb.exceptions import QueryError
-from flowmaticdb.query._condition import Condition
-from flowmaticdb.query.enums._condition import ConditionEnum
+from flowmaticdb import QueryError, QueryWithParams
+from flowmaticdb.dialects import SQLiteDialect
+from flowmaticdb.query import Condition
+from flowmaticdb.query.enums import ConditionEnum
 
 
 def test_sqlite_select(sqlite_dialect: SQLiteDialect) -> None:
@@ -27,7 +26,7 @@ def test_sqlite_select(sqlite_dialect: SQLiteDialect) -> None:
 
 
 def test_sqlite_on_conflict(sqlite_dialect: SQLiteDialect) -> None:
-    from flowmaticdb.query._on_conflict import OnConflict
+    from flowmaticdb.query import OnConflict
     qwp: QueryWithParams = sqlite_dialect.insert(
         table="users",
         values=[{"id": 1, "name": "John"}],
@@ -35,7 +34,6 @@ def test_sqlite_on_conflict(sqlite_dialect: SQLiteDialect) -> None:
         returning=None,
         last_insert_id=None,
     )
-    # SQLite 3.45 supports ON CONFLICT
     assert "ON CONFLICT" in qwp.query
     assert "DO NOTHING" in qwp.query
 
@@ -43,7 +41,7 @@ def test_sqlite_on_conflict(sqlite_dialect: SQLiteDialect) -> None:
 def test_sqlite_on_conflict_named_constraint_raises(
     sqlite_dialect: SQLiteDialect,
 ) -> None:
-    from flowmaticdb.query._on_conflict import OnConflict
+    from flowmaticdb.query import OnConflict
     with pytest.raises(QueryError, match="Named ON CONFLICT"):
         sqlite_dialect.insert(
             table="users",
@@ -67,11 +65,11 @@ def test_sqlite_returning(sqlite_dialect: SQLiteDialect) -> None:
 
 
 def test_sqlite_type_mapping(sqlite_dialect: SQLiteDialect) -> None:
-    from flowmaticdb.query.enums._type import TypeEnum
+    from flowmaticdb.query.enums import TypeEnum
     assert sqlite_dialect.type(TypeEnum.BOOL) == "BOOLEAN"
     assert sqlite_dialect.type(TypeEnum.INT) == "INTEGER"
     assert sqlite_dialect.type(TypeEnum.FLOAT) == "REAL"
-    assert sqlite_dialect.type(TypeEnum.DATETIME) == "TEXT"
+    assert sqlite_dialect.type(TypeEnum.DATETIME) == "DATETIME"
 
 
 def test_sqlite_no_distinct_on(sqlite_dialect: SQLiteDialect) -> None:
@@ -83,12 +81,9 @@ def test_sqlite_no_generated_identity(sqlite_dialect: SQLiteDialect) -> None:
 
 
 def test_sqlite_auto_increment_column(sqlite_dialect: SQLiteDialect) -> None:
-    from flowmaticdb.query.enums._type import TypeEnum
-    col: dict[str, object] = {
-        "name": "id",
-        "type": TypeEnum.INT,
-        "auto_increment": True,
-    }
+    from flowmaticdb.query.ddl import Column
+    from flowmaticdb.query.enums import TypeEnum
+    col = Column(name="id", type=TypeEnum.INT, auto_increment=True)
     col_def: str = sqlite_dialect._build_column(col)
     assert "PRIMARY KEY AUTOINCREMENT" in col_def
 
@@ -103,8 +98,10 @@ def test_sqlite_glob_condition(sqlite_dialect: SQLiteDialect) -> None:
 
 
 def test_sqlite_alter_raises(sqlite_dialect: SQLiteDialect) -> None:
-    with pytest.raises(QueryError):
-        sqlite_dialect._build_alter("test", {"type": "alter_column"})
+    from flowmaticdb.query.ddl import AddPrimaryKeys, AlterColumn
 
     with pytest.raises(QueryError):
-        sqlite_dialect._build_alter("test", {"type": "add_primary_key"})
+        sqlite_dialect._build_alter("test", AlterColumn(column="age"))
+
+    with pytest.raises(QueryError):
+        sqlite_dialect._build_alter("test", AddPrimaryKeys(columns=["id"]))

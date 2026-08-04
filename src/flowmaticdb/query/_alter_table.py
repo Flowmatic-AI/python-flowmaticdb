@@ -4,18 +4,20 @@ from typing import TYPE_CHECKING, Any
 
 from flowmaticdb.query._ddl_mixins import AltersMixin
 from flowmaticdb.query._query import Query
-from flowmaticdb.result._base import ResultABC
+from flowmaticdb.query.ddl import AlterABC
+from flowmaticdb.result import ResultABC
 
 if TYPE_CHECKING:
     from flowmaticdb._query_with_params import QueryWithParams
-    from flowmaticdb.database._abc import DatabaseABC
-    from flowmaticdb.dialects._base import DialectABC
+    from flowmaticdb.database import DatabaseABC
+    from flowmaticdb.dialects import DialectABC
 
 
 class AlterTableQuery(Query, AltersMixin):
-    def __init__(self, dialect: DialectABC, table: str | list[str], database: DatabaseABC, *args: Any, **kwargs: Any) -> None:
-        kwargs['database'] = database
-        super().__init__(dialect, table, *args, **kwargs)
+    def __init__(self, dialect: DialectABC, table: str | list[str], database: DatabaseABC) -> None:
+        super().__init__(dialect, table, database)
+
+        self._alters: list[AlterABC] = []
 
     def to_query_with_params(self) -> list[QueryWithParams]:
         alters = self._alters
@@ -33,4 +35,4 @@ class AlterTableQuery(Query, AltersMixin):
         return [self._database.query_with_params(qwp, emulate_prepare) for qwp in queries_with_params]
 
     def explain(self, emulate_prepare: bool = False) -> list[dict[str, Any]]:
-        return super().explain(emulate_prepare)
+        return []

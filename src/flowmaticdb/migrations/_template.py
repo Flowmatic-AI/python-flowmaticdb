@@ -22,8 +22,6 @@ class {class_name}(MigrationABC):
 
 
 def migration_class_name(name: str) -> str:
-    """'create_users_table' -> 'CreateUsersTable'"""
-
     parts = [part for part in re.split(r"[^0-9a-zA-Z]+", name) if part]
     class_name = "".join(part[0].upper() + part[1:] for part in parts)
 
@@ -34,6 +32,4 @@ def migration_class_name(name: str) -> str:
 
 
 def render_migration(name: str) -> str:
-    """Return the source code for a new migration module for the given name."""
-
     return MIGRATION_TEMPLATE.format(class_name=migration_class_name(name))

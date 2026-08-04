@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from flowmaticdb.dialects._sql_dialect import SQLDialect
-from flowmaticdb.query._update import UpdateQuery
+from flowmaticdb.dialects import SQLDialect
+from flowmaticdb.query import UpdateQuery
 
 
 def test_update_simple(sql_dialect: SQLDialect, mock_db) -> None:

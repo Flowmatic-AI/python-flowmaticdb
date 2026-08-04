@@ -1,10 +1,9 @@
 from __future__ import annotations
 
-import pytest
-
-from flowmaticdb._query_with_params import QueryWithParams
-from flowmaticdb.dialects._sql_dialect import SQLDialect
-from flowmaticdb.query.enums._type import TypeEnum
+from flowmaticdb import QueryWithParams
+from flowmaticdb.dialects import SQLDialect
+from flowmaticdb.query.ddl import Column
+from flowmaticdb.query.enums import TypeEnum
 
 
 def test_select_simple(sql_dialect: SQLDialect) -> None:
@@ -59,8 +58,8 @@ def test_select_distinct(sql_dialect: SQLDialect) -> None:
 
 
 def test_select_with_where(sql_dialect: SQLDialect) -> None:
-    from flowmaticdb.query._condition import Condition
-    from flowmaticdb.query.enums._condition import ConditionEnum
+    from flowmaticdb.query import Condition
+    from flowmaticdb.query.enums import ConditionEnum
 
     where: list[Condition] = [
         Condition(condition=ConditionEnum.EQUALS, identifier="id", value=1),
@@ -102,8 +101,8 @@ def test_select_with_limit_offset(sql_dialect: SQLDialect) -> None:
 
 
 def test_select_with_order_by(sql_dialect: SQLDialect) -> None:
-    from flowmaticdb.query._order_by import OrderBy
-    from flowmaticdb.query.enums._order_by_dir import OrderByDirectionEnum
+    from flowmaticdb.query import OrderBy
+    from flowmaticdb.query.enums import OrderByDirectionEnum
 
     ob: list[OrderBy] = [OrderBy(column="name", direction=OrderByDirectionEnum.ASC)]
     qwp: QueryWithParams = sql_dialect.select(
@@ -144,7 +143,7 @@ def test_insert_multiple_rows(sql_dialect: SQLDialect) -> None:
         last_insert_id=None,
     )
     assert qwp.query.count("VALUES") == 1
-    assert qwp.query.count("(") >= 3  # Two row sets with parens
+    assert qwp.query.count("(") >= 3
 
 
 def test_update_simple(sql_dialect: SQLDialect) -> None:
@@ -160,8 +159,8 @@ def test_update_simple(sql_dialect: SQLDialect) -> None:
 
 
 def test_update_with_where(sql_dialect: SQLDialect) -> None:
-    from flowmaticdb.query._condition import Condition
-    from flowmaticdb.query.enums._condition import ConditionEnum
+    from flowmaticdb.query import Condition
+    from flowmaticdb.query.enums import ConditionEnum
 
     where: list[Condition] = [Condition(condition=ConditionEnum.EQUALS, identifier="id", value=1)]
     qwp: QueryWithParams = sql_dialect.update(
@@ -183,8 +182,8 @@ def test_delete_simple(sql_dialect: SQLDialect) -> None:
 
 
 def test_delete_with_where(sql_dialect: SQLDialect) -> None:
-    from flowmaticdb.query._condition import Condition
-    from flowmaticdb.query.enums._condition import ConditionEnum
+    from flowmaticdb.query import Condition
+    from flowmaticdb.query.enums import ConditionEnum
 
     where: list[Condition] = [Condition(condition=ConditionEnum.EQUALS, identifier="id", value=5)]
     qwp: QueryWithParams = sql_dialect.delete(
@@ -201,8 +200,8 @@ def test_create_table(sql_dialect: SQLDialect) -> None:
         if_not_exists=False,
         table="users",
         columns=[
-            {"name": "id", "type": TypeEnum.INT, "auto_increment": True, "not_null": True},
-            {"name": "name", "type": TypeEnum.STRING, "not_null": True},
+            Column(name="id", type=TypeEnum.INT, auto_increment=True, not_null=True),
+            Column(name="name", type=TypeEnum.STRING, not_null=True),
         ],
         primary_keys=["id"],
         constraints=None,
@@ -261,7 +260,8 @@ def test_cast_to_query(sql_dialect: SQLDialect) -> None:
     assert sql_dialect.cast_to_query(True) == "1"
     assert sql_dialect.cast_to_query(42) == "42"
     assert sql_dialect.cast_to_query("hello") == "'hello'"
-    assert sql_dialect.cast_to_query(3.14) == "3.14"
+    assert sql_dialect.cast_to_query(3.14) == "3.140000000000000124344978758017532527446746826171875"
+    assert sql_dialect.cast_to_query(2.0) == "2.0"
 
 
 def test_cast_to_driver(sql_dialect: SQLDialect) -> None:
@@ -276,8 +276,30 @@ def test_cast_to_driver(sql_dialect: SQLDialect) -> None:
     assert sql_dialect.cast_to_driver(datetime(2026, 8, 3, 12, 30, 45, tzinfo=UTC)) == "2026-08-03 12:30:45"
 
 
+def test_base_on_conflict_is_a_noop_when_dialect_lacks_support(sql_dialect: SQLDialect) -> None:
+    """The base ANSI dialect sets `on_conflict = False` by default (mirrors
+    SQLDialect::ON_CONFLICT = false), so buildOnConflict() must return
+    early and silently drop the clause -- matching PHP's
+    `if (!$this->onConflict()) { return; }` gate -- regardless of what
+    on_conflict value was passed in."""
+    from flowmaticdb.query import OnConflict
+
+    qwp: QueryWithParams = sql_dialect.insert(
+        table="users",
+        values=[{"id": 1, "name": "x"}],
+        on_conflict=OnConflict(conflict=["id"], updates=None),
+        returning=None,
+        last_insert_id=None,
+    )
+    assert "ON CONFLICT" not in qwp.query
+
+
 def test_base_on_conflict_column_list(sql_dialect: SQLDialect) -> None:
-    from flowmaticdb.query._on_conflict import OnConflict
+    """With on_conflict support enabled, a column-list conflict target
+    renders as `ON CONFLICT (col) DO ...`."""
+    from flowmaticdb.query import OnConflict
+
+    sql_dialect.on_conflict = True
     qwp: QueryWithParams = sql_dialect.insert(
         table="users",
         values=[{"id": 1, "name": "x"}],
@@ -289,16 +311,63 @@ def test_base_on_conflict_column_list(sql_dialect: SQLDialect) -> None:
     assert "DO NOTHING" in qwp.query
 
 
-def test_base_on_conflict_named_constraint_raises(
-    sql_dialect: SQLDialect,
-) -> None:
-    from flowmaticdb.exceptions import QueryError
-    from flowmaticdb.query._on_conflict import OnConflict
-    with pytest.raises(QueryError, match="Named constraint ON CONFLICT"):
-        sql_dialect.insert(
-            table="users",
-            values=[{"id": 1, "name": "x"}],
-            on_conflict=OnConflict(conflict="users_pkey", updates=None),
-            returning=None,
-            last_insert_id=None,
-        )
+def test_base_on_conflict_named_constraint(sql_dialect: SQLDialect) -> None:
+    """PHP's base SQLDialect::buildOnConflict *does* support named
+    constraints, rendering `ON CONFLICT ON CONSTRAINT "name" DO ...` --
+    it does not raise. (Individual dialects like SQLite override
+    buildOnConflict to raise when their DB has no such syntax, but that is
+    dialect-specific, not base behaviour.)"""
+    from flowmaticdb.query import OnConflict
+
+    sql_dialect.on_conflict = True
+    qwp: QueryWithParams = sql_dialect.insert(
+        table="users",
+        values=[{"id": 1, "name": "x"}],
+        on_conflict=OnConflict(conflict="users_pkey", updates=None),
+        returning=None,
+        last_insert_id=None,
+    )
+    assert 'ON CONFLICT ON CONSTRAINT "users_pkey"' in qwp.query
+    assert "DO NOTHING" in qwp.query
+
+
+def test_base_on_conflict_do_update_excluded_all_columns(sql_dialect: SQLDialect) -> None:
+    """An empty (but non-None) updates dict means "update every column from
+    the insert values", referencing EXCLUDED -- and the column list is the
+    union across *all* rows, not just the first."""
+    from flowmaticdb.query import OnConflict
+
+    sql_dialect.on_conflict = True
+    qwp: QueryWithParams = sql_dialect.insert(
+        table="users",
+        values=[{"id": 1, "name": "x"}, {"id": 2, "email": "e@x.com"}],
+        on_conflict=OnConflict(conflict=["id"], updates={}),
+        returning=None,
+        last_insert_id=None,
+    )
+    assert 'DO UPDATE SET "id" = EXCLUDED."id", "name" = EXCLUDED."name", "email" = EXCLUDED."email"' in qwp.query
+
+
+def test_base_returning_is_a_noop_when_dialect_lacks_support(sql_dialect: SQLDialect) -> None:
+    """The base ANSI dialect sets `returning = False` by default (mirrors
+    SQLDialect::RETURNING = false)."""
+    qwp: QueryWithParams = sql_dialect.insert(
+        table="users",
+        values=[{"id": 1}],
+        on_conflict=None,
+        returning=["id"],
+        last_insert_id=None,
+    )
+    assert "RETURNING" not in qwp.query
+
+
+def test_base_returning_enabled(sql_dialect: SQLDialect) -> None:
+    sql_dialect.returning = True
+    qwp: QueryWithParams = sql_dialect.insert(
+        table="users",
+        values=[{"id": 1}],
+        on_conflict=None,
+        returning=["id", "name"],
+        last_insert_id=None,
+    )
+    assert 'RETURNING "id", "name"' in qwp.query

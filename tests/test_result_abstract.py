@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from flowmaticdb.result._result import Result, snapshot_result
+from flowmaticdb.result import Result, snapshot_result
 
 
 def test_result_creation() -> None:
@@ -82,5 +82,4 @@ def test_result_from_result() -> None:
     assert snapshot.columns() == {"id": "INTEGER"}
     rows: list[dict] = snapshot.fetch_dicts()
     assert len(rows) == 2
-    # Original should be exhausted
     assert inner.fetch_dicts() == []

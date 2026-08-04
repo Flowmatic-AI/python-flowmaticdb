@@ -3,13 +3,11 @@ from __future__ import annotations
 import importlib.util
 import os
 
-from flowmaticdb.exceptions import DatabaseError
+from flowmaticdb._exceptions import DatabaseError
 from flowmaticdb.migrations._migration_abc import MigrationABC
 
 
 def discover_migration_files(migrations_dir: str) -> list[str]:
-    """Return sorted filenames (not full paths) of migration modules in the directory."""
-
     if not os.path.isdir(migrations_dir):
         raise DatabaseError(f"Migrations directory does not exist: {migrations_dir}")
 
@@ -25,8 +23,6 @@ def discover_migration_files(migrations_dir: str) -> list[str]:
 
 
 def load_migration(migrations_dir: str, filename: str) -> MigrationABC:
-    """Import the module by absolute path and return an instance of its MigrationABC subclass."""
-
     path = os.path.join(migrations_dir, filename)
     stem = os.path.splitext(filename)[0]
     module_name = f"flowmaticdb_migration_{stem}"

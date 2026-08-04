@@ -4,7 +4,7 @@ from abc import ABC, abstractmethod
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
-    from flowmaticdb.dialects._base import DialectABC
+    from flowmaticdb.dialects import DialectABC
 class SqlABC(ABC):
     @abstractmethod
     def sql(self, dialect: DialectABC) -> str:

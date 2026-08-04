@@ -3,14 +3,13 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from typing import TYPE_CHECKING, Any
 
-from flowmaticdb.result._base import ResultABC
+from flowmaticdb._query_with_params import QueryWithParams
+from flowmaticdb.result import ResultABC
 
 if TYPE_CHECKING:
-    from flowmaticdb._query_with_params import QueryWithParams
-    from flowmaticdb.database._abc import DatabaseABC
-    from flowmaticdb.dialects._base import DialectABC
-    from flowmaticdb.query.expressions._alias import Alias
-    from flowmaticdb.query.expressions._sub_query import SubQuery
+    from flowmaticdb.database import DatabaseABC
+    from flowmaticdb.dialects import DialectABC
+    from flowmaticdb.query.expressions import Alias, SubQuery
 
 
 class Query(ABC):

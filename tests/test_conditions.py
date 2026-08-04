@@ -1,9 +1,7 @@
 from __future__ import annotations
 
-from flowmaticdb.query._condition import Condition
-from flowmaticdb.query._condition_group import HavingGroup, WhereGroup
-from flowmaticdb.query.enums._chain import ChainEnum
-from flowmaticdb.query.enums._condition import ConditionEnum
+from flowmaticdb.query import Condition, HavingGroup, WhereGroup
+from flowmaticdb.query.enums import ChainEnum, ConditionEnum
 
 
 def test_condition_creation() -> None:

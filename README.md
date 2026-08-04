@@ -681,7 +681,7 @@ DatabaseError
 ```
 
 ```python
-from flowmaticdb.exceptions import DatabaseError, QueryError
+from flowmaticdb import DatabaseError, QueryError
 
 try:
     db.select("users").execute()
@@ -862,7 +862,7 @@ from flowmaticdb.query.enums import ReferentialActionEnum
 
 ## Import Notes
 
-A leading underscore on a module name marks it as a private implementation detail — never import from it directly. Each package's public API is exactly its `__init__.py` `__all__`; import from the package instead. (`flowmaticdb.exceptions` is the one deliberate exception, kept as a public module by convention.)
+A leading underscore on a module name marks it as a private implementation detail — never import from it directly. Each package's public API is exactly its `__init__.py` `__all__`; import from the package instead. This holds without exception, including the exception classes and helper functions, which live in `_exceptions.py` and `_helpers.py` and are re-exported from `flowmaticdb`.
 
 - `PsycopgAdapter`, `MySQLAdapter` — Import from `flowmaticdb.adapters`, NOT a submodule
 - `PsycopgResult`, `MySQLResult` — Import from `flowmaticdb.result`, NOT a submodule

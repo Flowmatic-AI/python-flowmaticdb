@@ -6,12 +6,11 @@ from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
 
 from flowmaticdb.adapters._base import AdapterABC
-from flowmaticdb.result._base import ResultABC
-from flowmaticdb.result._sqlite import SQLite3Result
+from flowmaticdb.result import ResultABC, SQLite3Result
 
 if TYPE_CHECKING:
     from flowmaticdb._query_with_params import QueryWithParams
-    from flowmaticdb.dialects._base import DialectABC
+    from flowmaticdb.dialects import DialectABC
 
 
 class SQLiteAdapter(AdapterABC):
@@ -38,29 +37,37 @@ class SQLiteAdapter(AdapterABC):
 
         if read_only:
             uri = f"file:{db_name}?mode=ro"
-            self._connection = sqlite3.connect(uri, uri=True)
+            self._connection = sqlite3.connect(uri, uri=True, isolation_level=None)
         else:
-            self._connection = sqlite3.connect(db_name)
+            self._connection = sqlite3.connect(db_name, isolation_level=None)
 
         self._connection.row_factory = sqlite3.Row
 
-        pragmas = {
-            "busy_timeout": self._options.get("busy_timeout", 5000),
-            "encoding": self._options.get("encoding", "UTF-8"),
-            "journal_mode": self._options.get("journal_mode", "WAL"),
-            "foreign_keys": self._options.get("foreign_keys", 1),
-        }
-        for key, value in pragmas.items():
-            try:
-                self._connection.execute(f"PRAGMA {key} = {value}")
-            except sqlite3.Error:
-                pass
+        if "encryption_key" in self._options:
+            self._connection.execute(f"PRAGMA key = '{self._options['encryption_key']}'")
 
-        enc_key = self._options.get("encryption_key")
-        if enc_key:
-            self._connection.execute(f"PRAGMA key = '{enc_key}'")
+        if "busy_timeout" in self._options:
+            self._connection.execute(f"PRAGMA busy_timeout = {int(self._options['busy_timeout'])}")
 
-        self._connection.create_function("REGEXP", 2, _regexp_fn)
+        if "encoding" in self._options:
+            self._connection.execute(f"PRAGMA encoding = '{self._options['encoding']}'")
+
+        if "journal_mode" in self._options:
+            self._connection.execute(f"PRAGMA journal_mode = {self._options['journal_mode']}")
+
+        if self._options.get("foreign_keys"):
+            self._connection.execute("PRAGMA foreign_keys = ON")
+
+        create_functions: dict[str, Any] = self._options.get("create_functions", {})
+
+        if "REGEXP" not in create_functions:
+            self._connection.create_function("REGEXP", 2, _regexp_fn)
+
+        if "regexp_like" not in create_functions:
+            self._connection.create_function("regexp_like", -1, _regexp_like_fn)
+
+        for function_name, callback in create_functions.items():
+            self._connection.create_function(function_name, -1, callback)
 
         self._exec_startup_queries()
 
@@ -77,7 +84,6 @@ class SQLiteAdapter(AdapterABC):
         error: str | None = None
         try:
             self._connection.execute(query)
-            self._connection.commit()
         except sqlite3.Error as e:
             error = str(e)
             raise
@@ -124,27 +130,6 @@ class SQLiteAdapter(AdapterABC):
             duration = time.time() - start
             self._debug(query_with_params.to_sql(dialect), duration, error)
 
-    def begin_transaction(self) -> None:
-        self._connection.execute("BEGIN TRANSACTION")
-        self._in_transaction = True
-
-    def commit_transaction(self) -> None:
-        self._connection.commit()
-        self._in_transaction = False
-
-    def rollback_transaction(self) -> None:
-        self._connection.rollback()
-        self._in_transaction = False
-
-    def begin_savepoint(self, name: str) -> None:
-        self._connection.execute(f"SAVEPOINT {name}")
-
-    def commit_savepoint(self, name: str) -> None:
-        self._connection.execute(f"RELEASE SAVEPOINT {name}")
-
-    def rollback_savepoint(self, name: str) -> None:
-        self._connection.execute(f"ROLLBACK TO SAVEPOINT {name}")
-
     @property
     def in_transaction(self) -> bool:
         return self._connection.in_transaction
@@ -155,11 +140,35 @@ class SQLiteAdapter(AdapterABC):
         return row[0] if row else None
 
     def close(self) -> None:
-        self._connection.close()
+        if self._options.get("optimize", False):
+            try:
+                self._connection.execute("PRAGMA optimize")
+            except sqlite3.Error:
+                pass
+
+        if not self._options.get("persistent", False):
+            self._connection.close()
+
 
 def _regexp_fn(pattern: str, value: str) -> int:
     import re
     try:
         return 1 if re.search(pattern, str(value)) else 0
+    except re.error:
+        return 0
+
+
+def _regexp_like_fn(value: str, pattern: str, flags: str = "") -> int:
+    import re
+    try:
+        py_flags = 0
+        for flag in flags or "":
+            py_flags |= {
+                "i": re.IGNORECASE,
+                "m": re.MULTILINE,
+                "s": re.DOTALL,
+                "x": re.VERBOSE,
+            }.get(flag.lower(), 0)
+        return 1 if re.search(pattern, str(value), py_flags) else 0
     except re.error:
         return 0

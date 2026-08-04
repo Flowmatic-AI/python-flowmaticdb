@@ -1,8 +1,8 @@
 from __future__ import annotations
 
-from flowmaticdb._query_with_params import QueryWithParams
-from flowmaticdb.dialects._sql_dialect import SQLDialect
-from flowmaticdb.query._select import SelectQuery
+from flowmaticdb import QueryWithParams
+from flowmaticdb.dialects import SQLDialect
+from flowmaticdb.query import SelectQuery
 
 
 def test_select_query_creation(sql_dialect: SQLDialect, mock_db) -> None:

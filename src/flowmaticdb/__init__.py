@@ -1,14 +1,16 @@
-from flowmaticdb._query_with_params import QueryWithParams
-from flowmaticdb.exceptions import AdapterError, DatabaseError, DriverError, QueryError, QueryWithParamsError
-from flowmaticdb.helpers import (
+from flowmaticdb._exceptions import AdapterError, DatabaseError, DriverError, QueryError, QueryWithParamsError
+from flowmaticdb._helpers import (
     alias,
     current_timestamp,
+    escape_ansi,
+    escape_backslash,
     expression,
     identifier,
     now,
     raw,
     sub_query,
 )
+from flowmaticdb._query_with_params import QueryWithParams
 
 __all__ = [
     "AdapterError",
@@ -19,6 +21,8 @@ __all__ = [
     "QueryWithParamsError",
     "alias",
     "current_timestamp",
+    "escape_ansi",
+    "escape_backslash",
     "expression",
     "identifier",
     "now",

@@ -4,13 +4,16 @@ import time
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
 
+from flowmaticdb._exceptions import AdapterError
 from flowmaticdb.adapters._base import AdapterABC
-from flowmaticdb.result._base import ResultABC
-from flowmaticdb.result._mysql import MySQLResult
+from flowmaticdb.result import MySQLResult, ResultABC
 
 if TYPE_CHECKING:
+    from mysql.connector.abstracts import MySQLConnectionAbstract, MySQLCursorAbstract
+    from mysql.connector.types import RowItemType, RowType
+
     from flowmaticdb._query_with_params import QueryWithParams
-    from flowmaticdb.dialects._base import DialectABC
+    from flowmaticdb.dialects import DialectABC
 
 
 class MySQLAdapter(AdapterABC):
@@ -36,14 +39,15 @@ class MySQLAdapter(AdapterABC):
         self._port = port
         self._user = user
         self._password = password
-        self._connection: Any = None
-        self._current_cursor: Any = None
+        self._connection: MySQLConnectionAbstract
+        self._current_cursor: MySQLCursorAbstract | None = None
         self._connect()
 
     def _connect(self) -> None:
         import mysql.connector
+        from mysql.connector.pooling import PooledMySQLConnection
 
-        kwargs: dict[str, Any] = {
+        connect_options: dict[str, Any] = {
             "host": self._host,
             "port": self._port,
             "database": self._database_name,
@@ -54,41 +58,60 @@ class MySQLAdapter(AdapterABC):
 
         ssl_mode = self._options.get("ssl_mode")
         if ssl_mode:
-            kwargs["ssl_mode"] = ssl_mode
+            connect_options["ssl_mode"] = ssl_mode
 
         connect_timeout = self._options.get("connect_timeout")
         if connect_timeout:
-            kwargs["connect_timeout"] = connect_timeout
+            connect_options["connect_timeout"] = connect_timeout
 
         charset = self._options.get("charset", "utf8mb4")
-        kwargs["charset"] = charset
+        connect_options["charset"] = charset
 
-        self._connection = mysql.connector.connect(**kwargs)
+        connection = mysql.connector.connect(**connect_options)
+        if isinstance(connection, PooledMySQLConnection):
+            raise AdapterError("pooled MySQL connections are not supported")
+        self._connection = connection
+
+        if "charset" in self._options:
+            collation = self._options.get("collation")
+            names_sql = f"SET NAMES {self._options['charset']}"
+            if collation:
+                names_sql += f" COLLATE {collation}"
+            self.exec(names_sql)
+
+        if "engine" in self._options:
+            self.exec(f"SET SESSION default_storage_engine = {self._options['engine']}")
 
         self._exec_startup_queries()
 
     def _drain_cursor(self) -> None:
-        """Drain any unread results from the previous cursor.
-
-        MySQL connector forbids creating a new cursor while the previous
-        one still has unread rows.  This method consumes and discards any
-        remaining rows so the next query can proceed.
-        """
         if self._current_cursor is not None:
+            import mysql.connector
+
             try:
                 self._current_cursor.fetchall()
-            except Exception:  # noqa: BLE001, S110
+            except mysql.connector.Error:
                 pass
             self._current_cursor = None
 
+    @staticmethod
+    def _first_column(row: RowType | dict[str, RowItemType]) -> RowItemType:
+        if isinstance(row, dict):
+            return next(iter(row.values()))
+        return row[0]
+
     def version(self) -> str:
+        import mysql.connector
+
         try:
-            cursor = self._connection.execute("SELECT VERSION()")
+            self._drain_cursor()
+            cursor = self._connection.cursor()
+            cursor.execute("SELECT VERSION()")
             row = cursor.fetchone()
             if row:
-                return str(row[0])
+                return str(self._first_column(row))
             return "0"
-        except Exception:  # noqa: BLE001
+        except mysql.connector.Error:
             return "0"
 
     def exec(self, query: str) -> None:
@@ -151,40 +174,24 @@ class MySQLAdapter(AdapterABC):
             duration = time.time() - start
             self._debug(query_with_params.to_sql(dialect), duration, error)
 
-    def begin_transaction(self) -> None:
-        self._connection.start_transaction()
-        self._in_transaction = True
-
-    def commit_transaction(self) -> None:
-        self._connection.commit()
-        self._in_transaction = False
-
-    def rollback_transaction(self) -> None:
-        self._connection.rollback()
-        self._in_transaction = False
-
-    def begin_savepoint(self, name: str) -> None:
-        self._drain_cursor()
-        cursor = self._connection.cursor()
-        cursor.execute(f"SAVEPOINT {name}")
-
-    def commit_savepoint(self, name: str) -> None:
-        self._drain_cursor()
-        cursor = self._connection.cursor()
-        cursor.execute(f"RELEASE SAVEPOINT {name}")
-
-    def rollback_savepoint(self, name: str) -> None:
-        self._drain_cursor()
-        cursor = self._connection.cursor()
-        cursor.execute(f"ROLLBACK TO SAVEPOINT {name}")
-
     @property
     def in_transaction(self) -> bool:
-        return self._in_transaction
+        return bool(self._connection.in_transaction)
 
     def last_insert_id(self, name: str | None = None) -> int | str | None:
         self._drain_cursor()
         cursor = self._connection.cursor()
         cursor.execute("SELECT LAST_INSERT_ID()")
         row = cursor.fetchone()
-        return row[0] if row else None
+        if not row:
+            return None
+        value = self._first_column(row)
+        if value is None or isinstance(value, (int, str)):
+            return value
+        raise AdapterError(
+            f"unexpected LAST_INSERT_ID() result type: {type(value).__name__}"
+        )
+
+    def close(self) -> None:
+        if not self._options.get("persistent", False):
+            self._connection.close()

@@ -10,13 +10,11 @@ if TYPE_CHECKING:
 class MigrationABC(ABC):
     @abstractmethod
     def up(self, db: DB) -> None:
-        """Apply the change"""
+        pass
 
     @abstractmethod
     def down(self, db: DB) -> None:
-        """Revert the change"""
+        pass
 
     def in_transaction(self) -> bool:
-        """Run this migration in a transaction"""
-
         return True

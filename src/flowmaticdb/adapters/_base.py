@@ -4,11 +4,11 @@ from abc import ABC, abstractmethod
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
 
-from flowmaticdb.result._base import ResultABC
+from flowmaticdb.result import ResultABC
 
 if TYPE_CHECKING:
     from flowmaticdb._query_with_params import QueryWithParams
-    from flowmaticdb.dialects._base import DialectABC
+    from flowmaticdb.dialects import DialectABC
 
 
 class AdapterABC(ABC):
@@ -25,7 +25,6 @@ class AdapterABC(ABC):
         self._startup_queries = startup_queries or []
         self._options = options or {}
         self._debug_callback = debug_callback
-        self._in_transaction = False
 
     def _exec_startup_queries(self) -> None:
         for query in self._startup_queries:
@@ -64,35 +63,45 @@ class AdapterABC(ABC):
     ) -> ResultABC:
         ...
 
-    @abstractmethod
-    def begin_transaction(self) -> None:
-        ...
-
-    @abstractmethod
-    def commit_transaction(self) -> None:
-        ...
-
-    @abstractmethod
-    def rollback_transaction(self) -> None:
-        ...
-
-    @abstractmethod
-    def begin_savepoint(self, name: str) -> None:
-        ...
-
-    @abstractmethod
-    def commit_savepoint(self, name: str) -> None:
-        ...
-
-    @abstractmethod
-    def rollback_savepoint(self, name: str) -> None:
-        ...
-
     @property
     @abstractmethod
     def in_transaction(self) -> bool:
         ...
 
+    def begin_transaction(self, sql: str) -> None:
+        if self.in_transaction:
+            return
+        self.exec(sql)
+
+    def commit_transaction(self, sql: str) -> None:
+        if not self.in_transaction:
+            return
+        self.exec(sql)
+
+    def rollback_transaction(self, sql: str) -> None:
+        if not self.in_transaction:
+            return
+        self.exec(sql)
+
+    def begin_savepoint(self, sql: str) -> None:
+        if not self.in_transaction:
+            return
+        self.exec(sql)
+
+    def commit_savepoint(self, sql: str) -> None:
+        if not self.in_transaction:
+            return
+        self.exec(sql)
+
+    def rollback_savepoint(self, sql: str) -> None:
+        if not self.in_transaction:
+            return
+        self.exec(sql)
+
     @abstractmethod
     def last_insert_id(self, name: str | None = None) -> int | str | None:
+        ...
+
+    @abstractmethod
+    def close(self) -> None:
         ...

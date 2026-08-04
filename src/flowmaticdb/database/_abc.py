@@ -1,29 +1,34 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Self, TypeVar
 
-from flowmaticdb.result._base import ResultABC
+from flowmaticdb.result import ResultABC
+
+T = TypeVar("T")
 
 if TYPE_CHECKING:
     from flowmaticdb._query_with_params import QueryWithParams
-    from flowmaticdb.adapters._base import AdapterABC
-    from flowmaticdb.dialects._base import DialectABC
-    from flowmaticdb.query._alter_table import AlterTableQuery
-    from flowmaticdb.query._create_table import CreateTableQuery
-    from flowmaticdb.query._delete import DeleteQuery
-    from flowmaticdb.query._drop_table import DropTableQuery
-    from flowmaticdb.query._insert import InsertQuery
-    from flowmaticdb.query._select import SelectQuery
-    from flowmaticdb.query._update import UpdateQuery
-    from flowmaticdb.query.expressions._alias import Alias
-    from flowmaticdb.query.expressions._sub_query import SubQuery
+    from flowmaticdb.adapters import AdapterABC
+    from flowmaticdb.database._table import Table
+    from flowmaticdb.dialects import DialectABC
+    from flowmaticdb.query import (
+        AlterTableQuery,
+        CreateTableQuery,
+        DeleteQuery,
+        DropTableQuery,
+        InsertQuery,
+        SelectQuery,
+        UpdateQuery,
+    )
+    from flowmaticdb.query.expressions import Alias, SubQuery
 
 
 class DatabaseABC:
     def __init__(self, adapter: AdapterABC, dialect: DialectABC) -> None:
         self._adapter = adapter
         self._dialect = dialect
+        self._savepoints: list[str] = []
 
     @property
     def adapter(self) -> AdapterABC:
@@ -39,40 +44,58 @@ class DatabaseABC:
     def query(self, query: str) -> ResultABC:
         return self._adapter.query(query)
 
-    def prepared(self, query: str, params: list[Any], emulate: bool = False) -> ResultABC:
+    def prepared(self, query: str, params: list[Any] | None = None, emulate: bool = False) -> ResultABC:
         from flowmaticdb._query_with_params import QueryWithParams
-        qwp = QueryWithParams(query=query, params=params)
-        return self._adapter.query_with_params(self._dialect, qwp, emulate)
+        qwp = QueryWithParams(query=query, params=params or [])
+        return self.query_with_params(qwp, emulate)
 
     def query_with_params(self, qwp: QueryWithParams, emulate: bool = False) -> ResultABC:
-        return self._adapter.query_with_params(self._dialect, qwp, emulate)
+        if len(qwp.params) > 0:
+            return self._adapter.query_with_params(self._dialect, qwp, emulate)
+        return self._adapter.query(qwp.query)
 
     def begin_transaction(self, name: str | None = None) -> None:
-        if name:
-            qwp = self._dialect.begin_savepoint(name)
-            self._adapter.exec(qwp.query)
-        else:
-            self._adapter.begin_transaction()
+        if not self.in_transaction:
+            qwp = self._dialect.begin_transaction(name)
+            self._adapter.begin_transaction(qwp.query)
+            return
+
+        name = name or f"savepoint_{len(self._savepoints) + 1}"
+        self._savepoints.append(name)
+        qwp = self._dialect.begin_savepoint(name)
+        self._adapter.begin_savepoint(qwp.query)
 
     def commit_transaction(self, release_savepoints: bool = False, name: str | None = None) -> None:
-        if name:
-            qwp = self._dialect.commit_savepoint(name)
-            self._adapter.exec(qwp.query)
-        else:
-            self._adapter.commit_transaction()
+        if not self.in_transaction:
+            return
+
+        if release_savepoints or len(self._savepoints) == 0:
+            self._savepoints = []
+            qwp = self._dialect.commit_transaction(name)
+            self._adapter.commit_transaction(qwp.query)
+            return
+
+        qwp = self._dialect.commit_savepoint(self._savepoints.pop())
+        self._adapter.commit_savepoint(qwp.query)
 
     def rollback_transaction(self, release_savepoints: bool = False, name: str | None = None) -> None:
-        if name:
-            qwp = self._dialect.rollback_savepoint(name)
-            self._adapter.exec(qwp.query)
-        else:
-            self._adapter.rollback_transaction()
+        if not self.in_transaction:
+            return
+
+        if release_savepoints or len(self._savepoints) == 0:
+            self._savepoints = []
+            qwp = self._dialect.rollback_transaction(name)
+            self._adapter.rollback_transaction(qwp.query)
+            return
+
+        qwp = self._dialect.rollback_savepoint(self._savepoints.pop())
+        self._adapter.rollback_savepoint(qwp.query)
 
     @property
     def in_transaction(self) -> bool:
         return self._adapter.in_transaction
 
-    def transaction(self, callback: Callable[..., Any], release_savepoints: bool = False, name: str | None = None) -> Any:
+    def transaction(self, callback: Callable[[Self], T], release_savepoints: bool = False, name: str | None = None) -> T:
         self.begin_transaction(name=name)
         try:
             result = callback(self)
@@ -86,43 +109,44 @@ class DatabaseABC:
         return self._adapter.last_insert_id(name)
 
     def select(self, table: str | list[str] | Alias | SubQuery) -> SelectQuery:
-        from flowmaticdb.query._select import SelectQuery
+        from flowmaticdb.query import SelectQuery
         return SelectQuery(self._dialect, table, database=self)
 
     def select_table(self, table: str | list[str], alias: str | None = None) -> SelectQuery:
-        from flowmaticdb.query._select import SelectQuery
         if alias:
-            from flowmaticdb.query.expressions._alias import Alias
-            return SelectQuery(self._dialect, Alias(table, alias), database=self)
-        
-        return SelectQuery(self._dialect, table, database=self)
+            from flowmaticdb.query.expressions import Alias
+            return self.select(Alias(table, alias))
+
+        return self.select(table)
 
     def select_sub_query(self, sub_query: Any, alias: str) -> SelectQuery:
-        from flowmaticdb.query._select import SelectQuery
-        from flowmaticdb.query.expressions._sub_query import SubQuery
-        sq = SubQuery(sub_query, alias)
-        return SelectQuery(self._dialect, sq, database=self)
+        from flowmaticdb.query.expressions import SubQuery
+        return self.select(SubQuery(sub_query, alias))
 
     def insert(self, table: str | list[str]) -> InsertQuery:
-        from flowmaticdb.query._insert import InsertQuery
+        from flowmaticdb.query import InsertQuery
         return InsertQuery(self._dialect, table, database=self)
 
     def update(self, table: str | list[str]) -> UpdateQuery:
-        from flowmaticdb.query._update import UpdateQuery
+        from flowmaticdb.query import UpdateQuery
         return UpdateQuery(self._dialect, table, database=self)
 
     def delete(self, table: str | list[str]) -> DeleteQuery:
-        from flowmaticdb.query._delete import DeleteQuery
+        from flowmaticdb.query import DeleteQuery
         return DeleteQuery(self._dialect, table, database=self)
 
     def create_table(self, table: str | list[str]) -> CreateTableQuery:
-        from flowmaticdb.query._create_table import CreateTableQuery
+        from flowmaticdb.query import CreateTableQuery
         return CreateTableQuery(self._dialect, table, database=self)
 
     def alter_table(self, table: str | list[str]) -> AlterTableQuery:
-        from flowmaticdb.query._alter_table import AlterTableQuery
+        from flowmaticdb.query import AlterTableQuery
         return AlterTableQuery(self._dialect, table, database=self)
 
     def drop_table(self, table: str | list[str]) -> DropTableQuery:
-        from flowmaticdb.query._drop_table import DropTableQuery
+        from flowmaticdb.query import DropTableQuery
         return DropTableQuery(self._dialect, table, database=self)
+
+    def table(self, table: str | list[str]) -> Table:
+        from flowmaticdb.database._table import Table
+        return Table(self, self._dialect, table)

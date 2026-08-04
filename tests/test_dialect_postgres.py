@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from flowmaticdb._query_with_params import QueryWithParams
-from flowmaticdb.dialects._postgres import PostgresqlDialect
+from flowmaticdb import QueryWithParams
+from flowmaticdb.dialects import PostgresqlDialect
 
 
 def test_pg_select(pg_dialect: PostgresqlDialect) -> None:
@@ -39,7 +39,7 @@ def test_pg_distinct_on(pg_dialect: PostgresqlDialect) -> None:
 
 
 def test_pg_on_conflict_do_nothing(pg_dialect: PostgresqlDialect) -> None:
-    from flowmaticdb.query._on_conflict import OnConflict
+    from flowmaticdb.query import OnConflict
     qwp: QueryWithParams = pg_dialect.insert(
         table="users",
         values=[{"id": 1, "name": "John"}],
@@ -52,8 +52,8 @@ def test_pg_on_conflict_do_nothing(pg_dialect: PostgresqlDialect) -> None:
 
 
 def test_pg_on_conflict_do_update(pg_dialect: PostgresqlDialect) -> None:
-    from flowmaticdb.query._on_conflict import OnConflict
-    from flowmaticdb.query.expressions._excluded import Excluded
+    from flowmaticdb.query import OnConflict
+    from flowmaticdb.query.expressions import Excluded
     qwp: QueryWithParams = pg_dialect.insert(
         table="users",
         values=[{"id": 1, "name": "John"}],
@@ -66,7 +66,7 @@ def test_pg_on_conflict_do_update(pg_dialect: PostgresqlDialect) -> None:
 
 
 def test_pg_on_conflict_named_constraint(pg_dialect: PostgresqlDialect) -> None:
-    from flowmaticdb.query._on_conflict import OnConflict
+    from flowmaticdb.query import OnConflict
     qwp: QueryWithParams = pg_dialect.insert(
         table="users",
         values=[{"id": 1, "name": "John"}],
@@ -79,8 +79,8 @@ def test_pg_on_conflict_named_constraint(pg_dialect: PostgresqlDialect) -> None:
 
 
 def test_pg_on_conflict_named_constraint_do_update(pg_dialect: PostgresqlDialect) -> None:
-    from flowmaticdb.query._on_conflict import OnConflict
-    from flowmaticdb.query.expressions._excluded import Excluded
+    from flowmaticdb.query import OnConflict
+    from flowmaticdb.query.expressions import Excluded
     qwp: QueryWithParams = pg_dialect.insert(
         table="users",
         values=[{"id": 1, "name": "John"}],
@@ -113,7 +113,7 @@ def test_pg_bool_casting(pg_dialect: PostgresqlDialect) -> None:
 
 
 def test_pg_type_mapping(pg_dialect: PostgresqlDialect) -> None:
-    from flowmaticdb.query.enums._type import TypeEnum
+    from flowmaticdb.query.enums import TypeEnum
     assert pg_dialect.type(TypeEnum.BOOL) == "BOOLEAN"
     assert pg_dialect.type(TypeEnum.INT) == "INTEGER"
     assert pg_dialect.type(TypeEnum.FLOAT) == "REAL"
@@ -121,15 +121,39 @@ def test_pg_type_mapping(pg_dialect: PostgresqlDialect) -> None:
     assert pg_dialect.type(TypeEnum.DATETIME) == "TIMESTAMP"
 
 
-def test_pg_like_iliac(pg_dialect: PostgresqlDialect) -> None:
-    from flowmaticdb.query._condition import Condition
-    from flowmaticdb.query.enums._condition import ConditionEnum
+def test_pg_like_case_sensitive_by_default(pg_dialect: PostgresqlDialect) -> None:
+    """PgSQLDialect::buildConditionLike: no version gate -- plain LIKE is the
+    (case-sensitive) default; ILIKE is used only when case_insensitive was
+    explicitly requested."""
+    from flowmaticdb.query import Condition
+    from flowmaticdb.query.enums import ConditionEnum
     cond = Condition(condition=ConditionEnum.LIKE, identifier="name", value="%john%")
     parts: list[str] = []
     params: list[object] = []
     pg_dialect._build_condition(parts, params, cond)
     result = "".join(parts)
-    assert "ILIKE" in result
+    assert result == '"name" LIKE ?'
+    assert "ILIKE" not in result
+
+
+def test_pg_ilike_when_case_insensitive(pg_dialect: PostgresqlDialect) -> None:
+    from flowmaticdb.query import Condition
+    from flowmaticdb.query.enums import ConditionEnum
+    cond = Condition(
+        condition=ConditionEnum.LIKE, identifier="name", value="%john%", case_insensitive=True
+    )
+    parts: list[str] = []
+    params: list[object] = []
+    pg_dialect._build_condition(parts, params, cond)
+    assert "".join(parts) == '"name" ILIKE ?'
+
+    not_cond = Condition(
+        condition=ConditionEnum.NOT_LIKE, identifier="name", value="%john%", case_insensitive=True
+    )
+    parts2: list[str] = []
+    params2: list[object] = []
+    pg_dialect._build_condition(parts2, params2, not_cond)
+    assert "".join(parts2) == '"name" NOT ILIKE ?'
 
 
 def test_pg_version_gating(pg_dialect: PostgresqlDialect) -> None:

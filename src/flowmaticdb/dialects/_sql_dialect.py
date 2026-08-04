@@ -1,23 +1,55 @@
 from __future__ import annotations
 
+import re
+from collections.abc import Mapping
 from datetime import UTC, datetime
-from typing import Any
+from typing import Any, ClassVar
 
+from flowmaticdb._exceptions import QueryError
 from flowmaticdb._query_with_params import QueryWithParams
 from flowmaticdb.dialects._base import DialectABC
-from flowmaticdb.exceptions import QueryError
-from flowmaticdb.query._condition import Condition
-from flowmaticdb.query._condition_group import ConditionGroupABC
-from flowmaticdb.query._join import Join
-from flowmaticdb.query._on_conflict import OnConflict
-from flowmaticdb.query._order_by import OrderBy
-from flowmaticdb.query._select import SelectQuery
-from flowmaticdb.query._union import Union
-from flowmaticdb.query.enums._chain import ChainEnum
-from flowmaticdb.query.enums._condition import ConditionEnum
-from flowmaticdb.query.enums._type import TypeEnum
-from flowmaticdb.query.expressions._excluded import Excluded
-from flowmaticdb.query.expressions._sql import SqlABC
+from flowmaticdb.query import Condition, ConditionGroupABC, Join, OnConflict, OrderBy, SelectQuery, Union
+from flowmaticdb.query.ddl import (
+    AddColumn,
+    AddForeignKeyConstraint,
+    AddPrimaryKeys,
+    AddUniqueConstraint,
+    AlterABC,
+    AlterColumn,
+    Column,
+    ConstraintABC,
+    DropColumn,
+    DropConstraint,
+    ForeignKeyConstraint,
+    RawAlter,
+    RawConstraint,
+    RenameColumn,
+    UniqueConstraint,
+)
+from flowmaticdb.query.enums import ChainEnum, ConditionEnum, TypeEnum
+from flowmaticdb.query.expressions import Excluded, Raw, SqlABC
+
+_PHP_INT_MAX = 9223372036854775807
+
+
+_TRAILING_ZEROS = re.compile(r"(\.[0-9]+?)0+$")
+
+
+def _format_float_for_query(value: float) -> str:
+    formatted = f"{value:.53f}"
+    return _TRAILING_ZEROS.sub(r"\1", formatted)
+
+
+def _debug_type_name(value: Any) -> str:
+    if isinstance(value, bool):
+        return "bool"
+    if isinstance(value, int):
+        return "int"
+    if isinstance(value, float):
+        return "float"
+    if isinstance(value, str):
+        return "string"
+    return type(value).__name__
 
 
 class SQLDialect(DialectABC):
@@ -35,13 +67,13 @@ class SQLDialect(DialectABC):
         self.escape_ansi = True
         self.datetime_format = "%Y-%m-%d %H:%M:%S"
 
-    def begin_transaction(self) -> QueryWithParams:
+    def begin_transaction(self, name: str | None = None) -> QueryWithParams:
         return QueryWithParams(query="BEGIN TRANSACTION")
 
-    def commit_transaction(self) -> QueryWithParams:
+    def commit_transaction(self, name: str | None = None) -> QueryWithParams:
         return QueryWithParams(query="COMMIT TRANSACTION")
 
-    def rollback_transaction(self) -> QueryWithParams:
+    def rollback_transaction(self, name: str | None = None) -> QueryWithParams:
         return QueryWithParams(query="ROLLBACK TRANSACTION")
 
     def begin_savepoint(self, name: str) -> QueryWithParams:
@@ -67,7 +99,7 @@ class SQLDialect(DialectABC):
         offset: int | None,
         unions: list[Any] | None,
     ) -> QueryWithParams:
-        needs_wrapping = unions is not None and (limit is not None or offset is not None)
+        needs_wrapping = bool(unions)
 
         query_parts: list[str] = []
         params: list[Any] = []
@@ -276,26 +308,62 @@ class SQLDialect(DialectABC):
             self._build_question_marks(query, params, cond.value)
 
     def _build_condition_equals(self, query: list[str], params: list[Any], cond: Condition) -> None:
-        query.append(self._escape_or_sql(cond.identifier))
-        if cond.value is None:
-            query.append(" IS NULL")
-        elif cond.cast:
-            query.append(" = ")
-            query.append(self._escape_or_sql(cond.value))
-        else:
-            query.append(" = ")
-            self._build_question_marks(query, params, cond.value)
+        self._build_equality(query, params, cond, is_not=False)
 
     def _build_condition_not_equals(self, query: list[str], params: list[Any], cond: Condition) -> None:
-        query.append(self._escape_or_sql(cond.identifier))
+        self._build_equality(query, params, cond, is_not=True)
+
+    def _build_equality(self, query: list[str], params: list[Any], cond: Condition, is_not: bool) -> None:
+        identifier_sql = self._escape_or_sql(cond.identifier)
+        operator = "<>" if is_not else "="
+
         if cond.value is None:
-            query.append(" IS NOT NULL")
-        elif cond.cast:
-            query.append(" <> ")
-            query.append(self._escape_or_sql(cond.value))
-        else:
-            query.append(" <> ")
+            query.append(identifier_sql)
+            query.append(" IS NOT NULL" if is_not else " IS NULL")
+            return
+
+        if not cond.cast:
+            query.append(identifier_sql)
+            query.append(f" {operator} ")
             self._build_question_marks(query, params, cond.value)
+            return
+
+        if isinstance(cond.value, (list, SqlABC)):
+            query.append(identifier_sql)
+            query.append(f" {operator} ")
+            query.append(self._escape_or_sql(cond.value))
+            return
+
+        cast_type = self._cast_type_for_value(cond.value)
+
+        if cast_type is None:
+            query.append(identifier_sql)
+            query.append(f" {operator} ")
+            self._build_question_marks(query, params, cond.value)
+            return
+
+        query.append(f"cast({identifier_sql} AS {cast_type}) {operator} cast(")
+        self._build_question_marks(query, params, cond.value)
+        query.append(f" AS {cast_type})")
+
+    CAST_TYPES: ClassVar[Mapping[str, str]] = {}
+
+    def _cast_type_for_value(self, value: Any) -> str | None:
+        debug_type = _debug_type_name(value)
+        override = self.CAST_TYPES.get(debug_type)
+        if override is not None:
+            return override
+        if isinstance(value, bool):
+            return self.type(TypeEnum.BOOL)
+        if isinstance(value, int):
+            return self.type(TypeEnum.INT, 64)
+        if isinstance(value, float):
+            return self.type(TypeEnum.FLOAT, 64)
+        if isinstance(value, str):
+            return self.type(TypeEnum.STRING, _PHP_INT_MAX)
+        if isinstance(value, datetime):
+            return self.type(TypeEnum.DATETIME, 6)
+        return None
 
     def _build_condition_between(self, query: list[str], params: list[Any], cond: Condition) -> None:
         query.append(self._escape_or_sql(cond.identifier))
@@ -307,38 +375,82 @@ class SQLDialect(DialectABC):
             self._build_question_marks(query, params, cond.value[1])
 
     def _build_condition_like(self, query: list[str], params: list[Any], cond: Condition) -> None:
-        query.append(self._escape_or_sql(cond.identifier))
-        prefix = " NOT " if cond.condition == ConditionEnum.NOT_LIKE else " "
-        query.append(f"{prefix}LIKE ")
-        self._build_question_marks(query, params, cond.value)
+        identifier_sql = self._escape_or_sql(cond.identifier)
+
+        value_parts: list[str] = []
+        self._build_question_marks(value_parts, params, cond.value)
+        value_sql = "".join(value_parts)
+
+        if cond.case_insensitive:
+            identifier_sql = f"lower({identifier_sql})"
+            value_sql = f"lower({value_sql})"
+
+        operator = "NOT LIKE" if cond.condition == ConditionEnum.NOT_LIKE else "LIKE"
+        query.append(f"{identifier_sql} {operator} {value_sql}")
 
     def _build_condition_glob(self, query: list[str], params: list[Any], cond: Condition) -> None:
-        raise QueryError("GLOB is not supported by this dialect")
+        like_condition = Condition(
+            condition=ConditionEnum.NOT_LIKE if cond.condition == ConditionEnum.NOT_GLOB else ConditionEnum.LIKE,
+            identifier=cond.identifier,
+            value=self._glob_to_like(cond.value),
+            chain=cond.chain,
+            case_insensitive=cond.case_insensitive,
+        )
+        self._build_condition_like(query, params, like_condition)
+
+    @staticmethod
+    def _glob_to_like(glob_pattern: str) -> str:
+        translation: dict[str, str | int | None] = {"\\": "\\\\", "%": "\\%", "_": "\\_", "*": "%", "?": "_"}
+        return glob_pattern.translate(str.maketrans(translation))
 
     def _build_condition_in(self, query: list[str], params: list[Any], cond: Condition) -> None:
-        query.append(self._escape_or_sql(cond.identifier))
-        prefix = " NOT " if cond.condition == ConditionEnum.NOT_IN else " "
-        values = cond.value if isinstance(cond.value, (list, tuple)) else [cond.value]
-        if not values:
-            query.append(f"{prefix}IN (NULL)")
+        is_not = cond.condition == ConditionEnum.NOT_IN
+
+        if not isinstance(cond.value, SelectQuery) and not cond.value:
+            query.append("1 = 1" if is_not else "1 = 0")
             return
-        query.append(f"{prefix}IN (")
-        for i, val in enumerate(values):
+
+        query.append(self._escape_or_sql(cond.identifier))
+        query.append(" NOT IN " if is_not else " IN ")
+
+        if isinstance(cond.value, SelectQuery):
+            qwp = cond.value.to_query_with_params()
+            query.append(f"({qwp.query})")
+            params.extend(qwp.params)
+            return
+
+        query.append("(")
+        for i, val in enumerate(cond.value):
             if i > 0:
                 query.append(", ")
             self._build_question_marks(query, params, val)
         query.append(")")
 
     def _build_condition_regex(self, query: list[str], params: list[Any], cond: Condition) -> None:
-        if isinstance(cond.identifier, SqlABC):
-            query.append(cond.identifier.raw_sql(self))
-        else:
-            query.append(self.escape_identifier(str(cond.identifier)))
-        is_not = " NOT " if str(cond.condition).startswith("NOT ") else " "
-        query.append(f"{is_not}regexp_like(")
+        if cond.condition == ConditionEnum.NOT_REGEX:
+            query.append("NOT ")
+        query.append("regexp_like(")
+        query.append(self._escape_or_sql(cond.identifier))
+        query.append(", ")
         self._build_question_marks(query, params, cond.value)
-        query.append(f") ")
-        
+        query.append(", ")
+        self._build_question_marks(query, params, cond.flags or "")
+        query.append(")")
+
+    def _build_condition_regex_operator(
+        self,
+        query: list[str],
+        params: list[Any],
+        cond: Condition,
+        equals_operator: str,
+        not_equals_operator: str,
+    ) -> None:
+        query.append(self._escape_or_sql(cond.identifier))
+        query.append(f" {equals_operator if cond.condition == ConditionEnum.REGEX else not_equals_operator} ")
+        pattern = cond.value
+        if cond.flags:
+            pattern = f"(?{cond.flags}){cond.value}"
+        self._build_question_marks(query, params, pattern)
 
     def _build_condition_exists(self, query: list[str], params: list[Any], cond: Condition) -> None:
         prefix = "NOT " if cond.condition == ConditionEnum.NOT_EXISTS else ""
@@ -383,7 +495,12 @@ class SQLDialect(DialectABC):
         if not values:
             raise QueryError("INSERT requires at least one value set")
 
-        columns = list(values[0].keys())
+        columns: list[str] = []
+        for val_set in values:
+            for col in val_set:
+                if col not in columns:
+                    columns.append(col)
+
         query_parts.append(" (" + ", ".join(self.escape_identifier(c) for c in columns) + ")")
         query_parts.append(" VALUES")
 
@@ -394,7 +511,10 @@ class SQLDialect(DialectABC):
             for ci, col in enumerate(columns):
                 if ci > 0:
                     query_parts.append(", ")
-                self._build_question_marks(query_parts, params, val_set.get(col))
+                if col not in val_set:
+                    self._build_question_marks(query_parts, params, Raw("DEFAULT"))
+                else:
+                    self._build_question_marks(query_parts, params, val_set[col])
             query_parts.append(")")
 
         self._build_on_conflict(query_parts, params, on_conflict, values, last_insert_id)
@@ -410,19 +530,21 @@ class SQLDialect(DialectABC):
         values: list[dict[str, Any]],
         last_insert_id: str | None,
     ) -> str:
+        if not self.on_conflict:
+            return ""
+
         if on_conflict is None:
             return ""
 
         conflict = on_conflict.conflict
 
         if isinstance(conflict, str):
-            raise QueryError(
-                "Named constraint ON CONFLICT is not supported by the base SQL dialect"
+            query.append(f" ON CONFLICT ON CONSTRAINT {self.escape_identifier(conflict)}")
+        else:
+            query.append(
+                f" ON CONFLICT ({', '.join(self.escape_identifier(c) for c in conflict)})"
             )
 
-        query.append(
-            f" ON CONFLICT ({', '.join(self.escape_identifier(c) for c in conflict)})"
-        )
         self._build_on_conflict_action(query, params, on_conflict, values)
         return ""
 
@@ -438,32 +560,46 @@ class SQLDialect(DialectABC):
 
         if on_conflict.updates is None:
             query.append(" DO NOTHING")
-        elif not on_conflict.updates:
-            if values:
-                all_cols = list(values[0].keys())
-                query.append(" DO UPDATE SET ")
-                sets = [
-                    f"{self.escape_identifier(col)} = EXCLUDED.{self.escape_identifier(col)}"
-                    for col in all_cols
-                ]
-                query.append(", ".join(sets))
-        else:
+            return
+
+        if not on_conflict.updates:
+            columns: list[str] = []
+            for val_set in values:
+                for col in val_set:
+                    if col not in columns:
+                        columns.append(col)
+
             query.append(" DO UPDATE SET ")
-            update_sets: list[str] = []
-            for col, val in on_conflict.updates.items():
-                esc_col = self.escape_identifier(col)
-                if isinstance(val, Excluded):
-                    update_sets.append(f"{esc_col} = EXCLUDED.{esc_col}")
-                else:
-                    val_q: list[str] = []
-                    val_p: list[Any] = []
-                    self._build_question_marks(val_q, val_p, val)
-                    update_sets.append(f"{esc_col} = {''.join(val_q)}")
-                    params.extend(val_p)
-            query.append(", ".join(update_sets))
+            sets = [
+                f"{self.escape_identifier(col)} = EXCLUDED.{self.escape_identifier(col)}"
+                for col in columns
+            ]
+            query.append(", ".join(sets))
+            return
+
+        query.append(" DO UPDATE SET ")
+        update_sets: list[str] = []
+        for col, val in on_conflict.updates.items():
+            esc_col = self.escape_identifier(col)
+            if isinstance(val, Excluded):
+                update_sets.append(f"{esc_col} = EXCLUDED.{esc_col}")
+            else:
+                val_q: list[str] = []
+                val_p: list[Any] = []
+                self._build_question_marks(val_q, val_p, val)
+                update_sets.append(f"{esc_col} = {''.join(val_q)}")
+                params.extend(val_p)
+        query.append(", ".join(update_sets))
 
     def _build_returning(self, query: list[str], returning: list[str] | None) -> None:
-        pass
+        if not self.returning:
+            return
+
+        if returning is None:
+            return
+
+        columns = ", ".join(self.escape_identifier(c) for c in returning) if returning else "*"
+        query.append(f" RETURNING {columns}")
 
     def update(
         self,
@@ -472,6 +608,9 @@ class SQLDialect(DialectABC):
         where: list[Any] | None = None,
         returning: list[str] | None = None,
     ) -> QueryWithParams:
+        if not updates:
+            raise QueryError("UPDATE requires at least one column to update")
+
         query_parts = ["UPDATE "]
         params: list[Any] = []
 
@@ -511,10 +650,13 @@ class SQLDialect(DialectABC):
         self,
         if_not_exists: bool,
         table: Any,
-        columns: list[dict[str, Any]],
+        columns: list[Column],
         primary_keys: list[str] | None = None,
-        constraints: list[dict[str, Any]] | None = None,
+        constraints: list[ConstraintABC] | None = None,
     ) -> QueryWithParams:
+        if not columns:
+            raise QueryError("CREATE TABLE requires at least one column")
+
         query_parts = ["CREATE TABLE "]
         if if_not_exists:
             query_parts.append("IF NOT EXISTS ")
@@ -527,7 +669,7 @@ class SQLDialect(DialectABC):
 
         for col in columns:
             col_def = self._build_column(col)
-            if col.get("auto_increment") and "PRIMARY KEY" in col_def.upper():
+            if col.auto_increment and "PRIMARY KEY" in col_def.upper():
                 has_auto_increment_pk = True
             col_defs.append("  " + col_def)
 
@@ -543,29 +685,29 @@ class SQLDialect(DialectABC):
 
         return QueryWithParams(query="".join(query_parts))
 
-    def _build_column(self, col: dict[str, Any]) -> str:
-        parts = [self.escape_identifier(col["name"])]
+    def _build_column(self, col: Column) -> str:
+        parts = [self.escape_identifier(col.name)]
 
-        sql_type = col.get("type", "INTEGER")
+        sql_type = col.type
         if isinstance(sql_type, TypeEnum):
-            sql_type = self.type(sql_type, col.get("bits"))
+            sql_type = self.type(sql_type, col.bits)
         parts.append(sql_type)
 
-        if col.get("not_null"):
+        if col.not_null:
             parts.append("NOT NULL")
-        if col.get("default") is not None:
-            default = col["default"]
+        if col.default is not None:
+            default = col.default
             if isinstance(default, bool):
                 parts.append(f"DEFAULT {self.cast_bool(default)}")
             elif isinstance(default, int):
                 parts.append(f"DEFAULT {default}")
             elif isinstance(default, str):
-                parts.append(f"DEFAULT '{self.escape_string(default)}'")
+                parts.append(f"DEFAULT {self.escape_string(default)}")
             elif isinstance(default, SqlABC):
                 parts.append(f"DEFAULT {default.raw_sql(self)}")
             else:
                 parts.append(f"DEFAULT {default}")
-        if col.get("auto_increment"):
+        if col.auto_increment:
             if self.generated_by_default_as_identity:
                 parts.append("GENERATED BY DEFAULT AS IDENTITY")
             else:
@@ -573,89 +715,126 @@ class SQLDialect(DialectABC):
 
         return " ".join(parts)
 
-    def _build_constraint(self, constraint: dict[str, Any]) -> str:
-        ctype = constraint.get("type", "")
-        if ctype == "unique":
-            cols = constraint.get("columns", [])
-            name = constraint.get("name")
-            name_part = f"CONSTRAINT {self.escape_identifier(name)} " if name else ""
-            return f"{name_part}UNIQUE ({', '.join(self.escape_identifier(c) for c in cols)})"
-        elif ctype == "foreign_key":
-            cols = constraint.get("columns", [])
-            ref_table = constraint.get("ref_table", "")
-            ref_cols = constraint.get("ref_columns", [])
-            name = constraint.get("name")
-            name_part = f"CONSTRAINT {self.escape_identifier(name)} " if name else ""
-            on_delete = constraint.get("on_delete", "")
-            on_update = constraint.get("on_update", "")
-            parts = [f"{name_part}FOREIGN KEY ({', '.join(self.escape_identifier(c) for c in cols)})",
-                     f"REFERENCES {self.escape_identifier(ref_table)} ({', '.join(self.escape_identifier(c) for c in ref_cols)})"]
-            if on_delete:
-                parts.append(f"ON DELETE {on_delete}")
-            if on_update:
-                parts.append(f"ON UPDATE {on_update}")
-            return " ".join(parts)
-        return ""
+    def _build_constraint(self, constraint: ConstraintABC) -> str:
+        if isinstance(constraint, SqlABC):
+            return constraint.raw_sql(self)
+        if isinstance(constraint, UniqueConstraint):
+            return self._build_unique_constraint(constraint)
+        if isinstance(constraint, ForeignKeyConstraint):
+            return self._build_foreign_key_constraint(constraint)
+        if isinstance(constraint, RawConstraint):
+            return constraint.sql
+        raise QueryError(f"Unsupported constraint type: {type(constraint).__name__}")
 
-    def alter_table(self, table: Any, alters: list[dict[str, Any]]) -> list[QueryWithParams]:
+    def _build_unique_constraint(self, constraint: UniqueConstraint) -> str:
+        name = constraint.name
+        name_part = f"CONSTRAINT {self.escape_identifier(name)} " if name else ""
+        return f"{name_part}UNIQUE ({', '.join(self.escape_identifier(c) for c in constraint.columns)})"
+
+    def _build_foreign_key_constraint(self, constraint: ForeignKeyConstraint) -> str:
+        name = constraint.name
+        name_part = f"CONSTRAINT {self.escape_identifier(name)} " if name else ""
+        ref_cols = ", ".join(self.escape_identifier(c) for c in constraint.ref_columns)
+        parts = [
+            f"{name_part}FOREIGN KEY ({', '.join(self.escape_identifier(c) for c in constraint.columns)})",
+            f"REFERENCES {self.escape_identifier(constraint.ref_table)} ({ref_cols})",
+        ]
+        if constraint.on_delete:
+            parts.append(f"ON DELETE {constraint.on_delete}")
+        if constraint.on_update:
+            parts.append(f"ON UPDATE {constraint.on_update}")
+        return " ".join(parts)
+
+    def alter_table(self, table: Any, alters: list[AlterABC]) -> list[QueryWithParams]:
+        if not alters:
+            raise QueryError("ALTER TABLE requires at least one alter")
+
         results = []
         for alter in alters:
             query = self._build_alter(table, alter)
             results.append(query)
         return results
 
-    def _build_alter(self, table: Any, alter: dict[str, Any]) -> QueryWithParams:
-        atype = alter.get("type", "")
+    def _build_alter(self, table: Any, alter: AlterABC) -> QueryWithParams:
         table_str = self._table_name(table)
 
-        if atype == "add_column":
-            col = alter.get("column", {})
-            return QueryWithParams(query=f"ALTER TABLE {table_str} ADD COLUMN {self._build_column(col)}")
-        elif atype == "alter_column":
-            col = alter.get("column", {})
-            col_name = self.escape_identifier(col.get("name", ""))
-            if "type" in col:
-                sql_type = col["type"]
-                if isinstance(sql_type, TypeEnum):
-                    sql_type = self.type(sql_type, col.get("bits"))
-                return QueryWithParams(query=f"ALTER TABLE {table_str} ALTER COLUMN {col_name} TYPE {sql_type}")
-            if "default" in col:
-                default = col["default"]
-                return QueryWithParams(query=f"ALTER TABLE {table_str} ALTER COLUMN {col_name} SET DEFAULT {default}")
-            if "not_null" in col:
-                if col["not_null"]:
-                    return QueryWithParams(query=f"ALTER TABLE {table_str} ALTER COLUMN {col_name} SET NOT NULL")
-                else:
-                    return QueryWithParams(query=f"ALTER TABLE {table_str} ALTER COLUMN {col_name} DROP NOT NULL")
-            if col.get("drop_default"):
-                return QueryWithParams(query=f"ALTER TABLE {table_str} ALTER COLUMN {col_name} DROP DEFAULT")
-            return QueryWithParams(query=f"ALTER TABLE {table_str} ALTER COLUMN {col_name}")
-        elif atype == "rename_column":
-            old = alter.get("old_name", "")
-            new = alter.get("new_name", "")
-            return QueryWithParams(query=f"ALTER TABLE {table_str} RENAME COLUMN {self.escape_identifier(old)} TO {self.escape_identifier(new)}")
-        elif atype == "drop_column":
-            col = alter.get("column", "")
-            return QueryWithParams(query=f"ALTER TABLE {table_str} DROP COLUMN {self.escape_identifier(col)}")
-        elif atype == "add_primary_key":
-            cols = alter.get("columns", [])
-            return QueryWithParams(query=f"ALTER TABLE {table_str} ADD PRIMARY KEY ({', '.join(self.escape_identifier(c) for c in cols)})")
-        elif atype == "add_unique":
-            cols = alter.get("columns", [])
-            name = alter.get("name")
-            name_part = f"CONSTRAINT {self.escape_identifier(name)} " if name else ""
-            return QueryWithParams(query=f"ALTER TABLE {table_str} ADD {name_part}UNIQUE ({', '.join(self.escape_identifier(c) for c in cols)})")
-        elif atype == "add_foreign_key":
-            cols = alter.get("columns", [])
-            ref_table = alter.get("ref_table", "")
-            ref_cols = alter.get("ref_columns", [])
-            name = alter.get("name")
-            name_part = f"CONSTRAINT {self.escape_identifier(name)} " if name else ""
-            return QueryWithParams(query=f"ALTER TABLE {table_str} ADD {name_part}FOREIGN KEY ({', '.join(self.escape_identifier(c) for c in cols)}) REFERENCES {self.escape_identifier(ref_table)} ({', '.join(self.escape_identifier(c) for c in ref_cols)})")
-        elif atype == "drop_constraint":
-            name = alter.get("name", "")
-            return QueryWithParams(query=f"ALTER TABLE {table_str} DROP CONSTRAINT {self.escape_identifier(name)}")
-        return QueryWithParams(query=f"ALTER TABLE {table_str}")
+        if isinstance(alter, AddColumn):
+            fragment = self._build_alter_table_add_column(alter)
+        elif isinstance(alter, AlterColumn):
+            fragment = self._build_alter_table_alter_column(alter)
+        elif isinstance(alter, RenameColumn):
+            fragment = self._build_alter_table_rename_column(alter)
+        elif isinstance(alter, DropColumn):
+            fragment = self._build_alter_table_drop_column(alter)
+        elif isinstance(alter, AddPrimaryKeys):
+            fragment = self._build_alter_table_add_primary_keys(alter)
+        elif isinstance(alter, AddUniqueConstraint):
+            fragment = self._build_alter_table_add_unique_constraint(alter)
+        elif isinstance(alter, AddForeignKeyConstraint):
+            fragment = self._build_alter_table_add_foreign_key_constraint(alter)
+        elif isinstance(alter, DropConstraint):
+            fragment = self._build_alter_table_drop_constraint(alter)
+        elif isinstance(alter, RawAlter):
+            fragment = self._build_alter_table_raw(alter)
+        else:
+            raise QueryError(f"Unsupported alter type: {type(alter).__name__}")
+
+        query = f"ALTER TABLE {table_str}"
+        if fragment:
+            query += f" {fragment}"
+
+        return QueryWithParams(query=query)
+
+    def _build_alter_table_add_column(self, alter: AddColumn) -> str:
+        return f"ADD COLUMN {self._build_column(alter)}"
+
+    def _build_alter_table_alter_column(self, alter: AlterColumn) -> str:
+        col_name = self.escape_identifier(alter.column)
+
+        if alter.sql is not None:
+            return f"ALTER COLUMN {col_name} {alter.sql}"
+
+        if alter.type is not None:
+            sql_type = alter.type
+            if isinstance(sql_type, TypeEnum):
+                sql_type = self.type(sql_type, alter.bits)
+            return f"ALTER COLUMN {col_name} TYPE {sql_type}"
+
+        if alter.default is not None:
+            return f"ALTER COLUMN {col_name} SET DEFAULT {alter.default}"
+
+        if alter.not_null is not None:
+            return (
+                f"ALTER COLUMN {col_name} SET NOT NULL"
+                if alter.not_null
+                else f"ALTER COLUMN {col_name} DROP NOT NULL"
+            )
+
+        if alter.drop_default:
+            return f"ALTER COLUMN {col_name} DROP DEFAULT"
+
+        return f"ALTER COLUMN {col_name}"
+
+    def _build_alter_table_rename_column(self, alter: RenameColumn) -> str:
+        return f"RENAME COLUMN {self.escape_identifier(alter.old_name)} TO {self.escape_identifier(alter.new_name)}"
+
+    def _build_alter_table_drop_column(self, alter: DropColumn) -> str:
+        return f"DROP COLUMN {self.escape_identifier(alter.column)}"
+
+    def _build_alter_table_add_primary_keys(self, alter: AddPrimaryKeys) -> str:
+        return f"ADD PRIMARY KEY ({', '.join(self.escape_identifier(c) for c in alter.columns)})"
+
+    def _build_alter_table_add_unique_constraint(self, alter: AddUniqueConstraint) -> str:
+        return f"ADD {self._build_unique_constraint(alter)}"
+
+    def _build_alter_table_add_foreign_key_constraint(self, alter: AddForeignKeyConstraint) -> str:
+        return f"ADD {self._build_foreign_key_constraint(alter)}"
+
+    def _build_alter_table_drop_constraint(self, alter: DropConstraint) -> str:
+        return f"DROP CONSTRAINT {self.escape_identifier(alter.name)}"
+
+    def _build_alter_table_raw(self, alter: RawAlter) -> str:
+        return alter.sql
 
     def drop_table(self, if_exists: bool, table: Any) -> QueryWithParams:
         table_str = self._table_name(table)
@@ -670,13 +849,21 @@ class SQLDialect(DialectABC):
             return ".".join(self.escape_identifier(t) for t in table)
         return self.escape_identifier(str(table))
 
+    escape_chars: ClassVar[Mapping[str, str]] = {"\0": ""}
+
     def escape_identifier(self, identifier: str | list[str]) -> str:
         if isinstance(identifier, list):
             return ".".join(self.escape_identifier(i) for i in identifier)
-        return f"{self.escape_identifier_char}{identifier}{self.escape_identifier_char}"
+        return self._escape(str(identifier), self.escape_identifier_char)
 
     def escape_string(self, string: str) -> str:
-        return string.replace(self.escape_string_char, self.escape_string_char * 2)
+        return self._escape(string, self.escape_string_char)
+
+    def _escape(self, string: str, char: str) -> str:
+        table = {ord(old): new for old, new in self.escape_chars.items()}
+        table[ord(char)] = (char * 2) if self.escape_ansi else f"\\{char}"
+        escaped = string.translate(table)
+        return f"{char}{escaped}{char}"
 
     def cast_to_query(self, value: Any) -> str:
         if value is None:
@@ -686,11 +873,11 @@ class SQLDialect(DialectABC):
         if isinstance(value, int):
             return str(value)
         if isinstance(value, float):
-            return str(value)
+            return _format_float_for_query(value)
         if isinstance(value, str):
-            return f"'{self.escape_string(value)}'"
+            return self.escape_string(value)
         if isinstance(value, datetime):
-            return f"'{value.strftime(self.datetime_format)}'"
+            return self.escape_string(self.cast_datetime(value))
         if isinstance(value, SelectQuery):
             qwp = value.to_query_with_params()
             return f"({qwp.to_sql(self)})"
@@ -729,18 +916,20 @@ class SQLDialect(DialectABC):
             try:
                 return datetime.strptime(value, self.datetime_format).replace(tzinfo=UTC)
             except ValueError:
+                pass
+            try:
+                return datetime.fromisoformat(value)
+            except ValueError:
                 return value
         return value
 
     def type(self, type_enum: TypeEnum, bits: int | None = None) -> str:
+        size = bits or 0
         mapping = {
-            TypeEnum.BOOL: "BOOLEAN",
-            TypeEnum.INT: "INTEGER",
-            TypeEnum.FLOAT: "FLOAT",
-            TypeEnum.STRING: "VARCHAR",
+            TypeEnum.BOOL: "BOOLEAN" if self.bool else "INTEGER",
+            TypeEnum.INT: "BIGINT" if size > 32 else "INTEGER",
+            TypeEnum.FLOAT: "DECIMAL(30, 15)" if size > 32 else "DECIMAL(15, 7)",
+            TypeEnum.STRING: "TEXT" if size > 255 else f"VARCHAR({bits or 255})",
             TypeEnum.DATETIME: "DATETIME",
         }
-        sql_type = mapping.get(type_enum, "VARCHAR")
-        if type_enum == TypeEnum.STRING and bits is not None:
-            sql_type = f"VARCHAR({bits})"
-        return sql_type
+        return mapping.get(type_enum, f"VARCHAR({bits or 255})")

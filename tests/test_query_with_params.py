@@ -1,7 +1,10 @@
 from __future__ import annotations
 
-from flowmaticdb._query_with_params import REGEX_PATTERN, QueryWithParams
-from flowmaticdb.dialects._sql_dialect import SQLDialect
+import pytest
+
+from flowmaticdb import QueryWithParams, QueryWithParamsError
+from flowmaticdb._query_with_params import REGEX_PATTERN
+from flowmaticdb.dialects import SQLDialect
 
 
 def test_query_with_params_creation() -> None:
@@ -106,6 +109,17 @@ def test_to_sql_with_dialect() -> None:
     sql: str = qwp.to_sql(dialect)
     assert "1" in sql
     assert "'hello'" in sql
+
+
+def test_to_sql_raises_when_params_run_short() -> None:
+    """PHP's QueryWithParams::toSql throws QueryWithParamsException('question mark and param
+    count do not match') when there are more placeholders than supplied params. The port must
+    raise flowmaticdb._exceptions.QueryWithParamsError instead of silently leaving a literal '?'
+    in the generated SQL."""
+    dialect: SQLDialect = SQLDialect()
+    qwp: QueryWithParams = QueryWithParams(query="SELECT * FROM t WHERE col = ? AND col2 = ?", params=[1])
+    with pytest.raises(QueryWithParamsError):
+        qwp.to_sql(dialect)
 
 
 def test_to_sql_interpolates_values() -> None:

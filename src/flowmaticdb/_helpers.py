@@ -1,23 +1,23 @@
 from __future__ import annotations
 
-from datetime import UTC, datetime
 from typing import Any
 
 from flowmaticdb.query import SelectQuery
-from flowmaticdb.query.expressions._alias import Alias
-from flowmaticdb.query.expressions._current_timestamp import CurrentTimestamp
-from flowmaticdb.query.expressions._expression import Expression
-from flowmaticdb.query.expressions._identifier import Identifier
-from flowmaticdb.query.expressions._raw import Raw
-from flowmaticdb.query.expressions._sub_query import SubQuery
+from flowmaticdb.query.expressions import Alias, CurrentTimestamp, Expression, Identifier, Raw, SubQuery
 
 
 def escape_ansi(string: str, chars: str) -> str:
-    return string.translate(str.maketrans(chars, chars * 2))
+    escaped = string
+    for char in chars:
+        escaped = escaped.replace(char, char * 2)
+    return escaped
 
 
 def escape_backslash(string: str, chars: str) -> str:
-    return string.translate(str.maketrans(chars, "\\" + chars))
+    escaped = string
+    for char in "\\" + chars:
+        escaped = escaped.replace(char, "\\" + char)
+    return escaped
 
 
 def raw(sql: str) -> Raw:

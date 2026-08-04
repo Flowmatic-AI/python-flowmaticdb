@@ -3,8 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
-from flowmaticdb.query.enums._chain import ChainEnum
-from flowmaticdb.query.enums._condition import ConditionEnum
+from flowmaticdb.query.enums import ChainEnum, ConditionEnum
 
 
 @dataclass
@@ -14,3 +13,5 @@ class Condition:
     value: Any = None
     chain: ChainEnum = ChainEnum.AND
     cast: bool = False
+    case_insensitive: bool = False
+    flags: str | None = None

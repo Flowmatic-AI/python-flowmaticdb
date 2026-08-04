@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, Any
 
 from flowmaticdb.query._ddl_mixins import (
     ColumnsDefinitionMixin,
@@ -9,18 +9,23 @@ from flowmaticdb.query._ddl_mixins import (
     PrimaryKeysMixin,
 )
 from flowmaticdb.query._query import Query
-from flowmaticdb.result._base import ResultABC
+from flowmaticdb.query.ddl import Column, ConstraintABC
+from flowmaticdb.result import ResultABC
 
 if TYPE_CHECKING:
     from flowmaticdb._query_with_params import QueryWithParams
-    from flowmaticdb.database._abc import DatabaseABC
-    from flowmaticdb.dialects._base import DialectABC
+    from flowmaticdb.database import DatabaseABC
+    from flowmaticdb.dialects import DialectABC
 
 
 class CreateTableQuery(Query, ColumnsDefinitionMixin, PrimaryKeysMixin, ConstraintsMixin, IfNotExistsMixin):
-    def __init__(self, dialect: DialectABC, table: str | list[str], database: DatabaseABC, *args: Any, **kwargs: Any) -> None:
-        kwargs['database'] = database
-        super().__init__(dialect, table, *args, **kwargs)
+    def __init__(self, dialect: DialectABC, table: str | list[str], database: DatabaseABC) -> None:
+        super().__init__(dialect, table, database)
+
+        self._columns: list[Column] = []
+        self._primary_keys: list[str] = []
+        self._constraints: list[ConstraintABC] = []
+        self._if_not_exists: bool = False
 
     def to_query_with_params(self) -> QueryWithParams:
         return self._dialect.create_table(
@@ -32,4 +37,11 @@ class CreateTableQuery(Query, ColumnsDefinitionMixin, PrimaryKeysMixin, Constrai
         )
 
     def execute(self, emulate_prepare: bool = False) -> ResultABC:
-        return cast(ResultABC, super().execute(emulate_prepare))
+        result = super().execute(emulate_prepare)
+        if not isinstance(result, ResultABC):
+            msg = "Expected a single ResultABC, got a list"
+            raise TypeError(msg)
+        return result
+
+    def explain(self, emulate_prepare: bool = False) -> list[dict[str, Any]]:
+        return []

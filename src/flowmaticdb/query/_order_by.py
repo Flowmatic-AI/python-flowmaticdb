@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from flowmaticdb.query.enums._order_by_dir import OrderByDirectionEnum
+from flowmaticdb.query.enums import OrderByDirectionEnum
 
 
 @dataclass

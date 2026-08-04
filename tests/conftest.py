@@ -2,11 +2,8 @@ from __future__ import annotations
 
 import pytest
 
-from flowmaticdb.database._abc import DatabaseABC
-from flowmaticdb.dialects._mysql import MySQLDialect
-from flowmaticdb.dialects._postgres import PostgresqlDialect
-from flowmaticdb.dialects._sql_dialect import SQLDialect
-from flowmaticdb.dialects._sqlite import SQLiteDialect
+from flowmaticdb.database import DatabaseABC
+from flowmaticdb.dialects import MySQLDialect, PostgresqlDialect, SQLDialect, SQLiteDialect
 
 
 class _MockDatabase(DatabaseABC):

@@ -3,11 +3,12 @@ from __future__ import annotations
 
 from typing import Any
 
-from flowmaticdb._query_with_params import QueryWithParams
-from flowmaticdb.adapters._sqlite import SQLiteAdapter
+from flowmaticdb import QueryWithParams
+from flowmaticdb.adapters import SQLiteAdapter
 from flowmaticdb.database import DB
-from flowmaticdb.dialects._sqlite import SQLiteDialect
-from flowmaticdb.result._base import ResultABC
+from flowmaticdb.dialects import SQLiteDialect
+from flowmaticdb.query.ddl import Column
+from flowmaticdb.result import ResultABC
 
 
 def test_sqlite_in_memory_crud() -> None:
@@ -19,31 +20,27 @@ def test_sqlite_in_memory_crud() -> None:
     assert adapter.driver_name == "sqlite"
     assert len(version) > 0
 
-    # Create table using DDL dialect method
-    from flowmaticdb.query.enums._type import TypeEnum
+    from flowmaticdb.query.enums import TypeEnum
     qwp: QueryWithParams = dialect.create_table(
         if_not_exists=False,
         table="users",
         columns=[
-            {"name": "id", "type": TypeEnum.INT, "auto_increment": True, "not_null": True},
-            {"name": "name", "type": TypeEnum.STRING, "not_null": True},
-            {"name": "email", "type": TypeEnum.STRING},
-            {"name": "age", "type": TypeEnum.INT},
-            {"name": "active", "type": TypeEnum.BOOL, "default": True},
+            Column(name="id", type=TypeEnum.INT, auto_increment=True, not_null=True),
+            Column(name="name", type=TypeEnum.STRING, not_null=True),
+            Column(name="email", type=TypeEnum.STRING),
+            Column(name="age", type=TypeEnum.INT),
+            Column(name="active", type=TypeEnum.BOOL, default=True),
         ],
         primary_keys=["id"],
         constraints=None,
     )
-    # DDL has no parameters - use exec
     adapter.exec(qwp.query)
 
-    # Verify table exists
     result: ResultABC = adapter.query("SELECT name FROM sqlite_master WHERE type='table' AND name='users'")
     rows: list[dict] = result.fetch_dicts()
     assert len(rows) == 1
     assert rows[0]["name"] == "users"
 
-    # Insert using dialect - parameterized, use query_with_params
     qwp = dialect.insert(
         table="users",
         values=[
@@ -58,7 +55,6 @@ def test_sqlite_in_memory_crud() -> None:
     result = adapter.query_with_params(dialect, qwp)
     assert result is not None
 
-    # Select all
     qwp = dialect.select(
         distinct=None,
         columns=None,
@@ -76,9 +72,8 @@ def test_sqlite_in_memory_crud() -> None:
     rows = result.fetch_dicts()
     assert len(rows) == 3
 
-    # Select with WHERE
-    from flowmaticdb.query._condition import Condition
-    from flowmaticdb.query.enums._condition import ConditionEnum
+    from flowmaticdb.query import Condition
+    from flowmaticdb.query.enums import ConditionEnum
     where: list[Condition] = [Condition(condition=ConditionEnum.EQUALS, identifier="name", value="Alice")]
     qwp = dialect.select(
         distinct=None,
@@ -98,7 +93,6 @@ def test_sqlite_in_memory_crud() -> None:
     assert len(rows) == 1
     assert rows[0]["name"] == "Alice"
 
-    # Update
     where = [Condition(condition=ConditionEnum.EQUALS, identifier="name", value="Bob")]
     qwp = dialect.update(
         table="users",
@@ -108,7 +102,6 @@ def test_sqlite_in_memory_crud() -> None:
     )
     adapter.query_with_params(dialect, qwp)
 
-    # Verify update
     where = [Condition(condition=ConditionEnum.EQUALS, identifier="name", value="Bob")]
     qwp = dialect.select(
         distinct=None,
@@ -128,12 +121,10 @@ def test_sqlite_in_memory_crud() -> None:
     assert row is not None
     assert row["age"] == 26
 
-    # Delete
     where = [Condition(condition=ConditionEnum.EQUALS, identifier="name", value="Charlie")]
     qwp = dialect.delete(table="users", where=where, returning=None)
     adapter.query_with_params(dialect, qwp)
 
-    # Verify delete
     qwp = dialect.select(
         distinct=None, columns=None, table="users",
         joins=None, where=None, group_by=None, having=None,
@@ -143,30 +134,25 @@ def test_sqlite_in_memory_crud() -> None:
     rows = result.fetch_dicts()
     assert len(rows) == 2
 
-    # Test transactions - first commit the implicit transaction from INSERT
-    adapter.commit_transaction()
-    # Now we can begin a new transaction
-    adapter.begin_transaction()
+    adapter.commit_transaction(dialect.commit_transaction().query)
+    adapter.begin_transaction(dialect.begin_transaction().query)
     qwp = dialect.insert(
         table="users",
         values=[{"name": "Dave", "email": "dave@example.com", "age": 40}],
         on_conflict=None, returning=None, last_insert_id=None,
     )
     adapter.query_with_params(dialect, qwp)
-    adapter.rollback_transaction()
+    adapter.rollback_transaction(dialect.rollback_transaction().query)
 
-    # Verify rollback (Dave should not be in the table)
     result = adapter.query("SELECT count(*) AS cnt FROM users")
     row = result.fetch_dict()
     assert row is not None
     assert row["cnt"] == 2
 
-    # Test Database facade
     db = DB(adapter, dialect)
     assert db.adapter is adapter
     assert db.dialect is dialect
 
-    # Clean up
     adapter.exec(dialect.drop_table(if_exists=True, table="users").query)
     adapter.close()
 
@@ -175,7 +161,7 @@ def test_database_connect_sqlite() -> None:
     """Test the DB.connect() factory method."""
     db = DB.connect_sqlite(":memory:")
     assert db is not None
-    assert db.adapter.driver_name == "sqlite"  # type: ignore[attr-defined]
+    assert db.adapter.driver_name == "sqlite"
     assert db.dialect is not None
     assert db.in_transaction is False
 
@@ -192,13 +178,12 @@ def test_query_builder_select_integration() -> None:
     adapter = SQLiteAdapter(database_name=":memory:")
     dialect = SQLiteDialect(version=adapter.version())
 
-    # Create and populate
-    from flowmaticdb.query.enums._type import TypeEnum
+    from flowmaticdb.query.enums import TypeEnum
     qwp: QueryWithParams = dialect.create_table(
         if_not_exists=False, table="items",
         columns=[
-            {"name": "id", "type": TypeEnum.INT, "auto_increment": True, "not_null": True},
-            {"name": "name", "type": TypeEnum.STRING},
+            Column(name="id", type=TypeEnum.INT, auto_increment=True, not_null=True),
+            Column(name="name", type=TypeEnum.STRING),
         ],
         primary_keys=["id"], constraints=None,
     )
@@ -211,9 +196,8 @@ def test_query_builder_select_integration() -> None:
     )
     adapter.query_with_params(dialect, qwp)
 
-    # Use SelectQuery
-    from flowmaticdb.database._database import Database
-    from flowmaticdb.query._select import SelectQuery
+    from flowmaticdb.database import Database
+    from flowmaticdb.query import SelectQuery
     db = Database(adapter, dialect)
     q = SelectQuery(dialect, "items", database=db)
     q.columns(["id", "name"])
@@ -223,9 +207,8 @@ def test_query_builder_select_integration() -> None:
     qwp = q.to_query_with_params()
     result = adapter.query_with_params(dialect, qwp)
     rows: list[dict] = result.fetch_dicts()
-    assert len(rows) == 2  # id > 1 = items 2 and 3
+    assert len(rows) == 2
 
-    # Test with limit
     q2 = SelectQuery(dialect, "items", database=db)
     q2.limit(1)
     qwp2: QueryWithParams = q2.to_query_with_params()
@@ -255,10 +238,10 @@ def test_last_insert_id() -> None:
     adapter = SQLiteAdapter(database_name=":memory:")
     dialect = SQLiteDialect(version=adapter.version())
 
-    from flowmaticdb.query.enums._type import TypeEnum
+    from flowmaticdb.query.enums import TypeEnum
     qwp: QueryWithParams = dialect.create_table(
         if_not_exists=False, table="t",
-        columns=[{"name": "id", "type": TypeEnum.INT, "auto_increment": True, "not_null": True}],
+        columns=[Column(name="id", type=TypeEnum.INT, auto_increment=True, not_null=True)],
         primary_keys=["id"], constraints=None,
     )
     adapter.exec(qwp.query)
