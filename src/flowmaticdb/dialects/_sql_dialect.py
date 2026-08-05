@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import sys
 import re
 from collections.abc import Mapping
 from datetime import UTC, datetime
@@ -28,9 +29,6 @@ from flowmaticdb.query.ddl import (
 )
 from flowmaticdb.query.enums import ChainEnum, ConditionEnum, TypeEnum
 from flowmaticdb.query.expressions import Excluded, Raw, SqlABC
-
-_PHP_INT_MAX = 9223372036854775807
-
 
 _TRAILING_ZEROS = re.compile(r"(\.[0-9]+?)0+$")
 
@@ -360,7 +358,7 @@ class SQLDialect(DialectABC):
         if isinstance(value, float):
             return self.type(TypeEnum.FLOAT, 64)
         if isinstance(value, str):
-            return self.type(TypeEnum.STRING, _PHP_INT_MAX)
+            return self.type(TypeEnum.STRING, sys.maxsize)
         if isinstance(value, datetime):
             return self.type(TypeEnum.DATETIME, 6)
         return None

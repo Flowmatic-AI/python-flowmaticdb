@@ -4,14 +4,14 @@ from __future__ import annotations
 class DatabaseError(Exception):
     pass
 
-class AdapterError(DatabaseError):
+class AdapterError(Exception):
     pass
 
-class DriverError(DatabaseError):
+class DriverError(Exception):
     pass
 
-class QueryError(DatabaseError):
+class QueryError(Exception):
     pass
 
-class QueryWithParamsError(DatabaseError):
+class QueryWithParamsError(Exception):
     pass

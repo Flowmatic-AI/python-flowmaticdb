@@ -21,8 +21,7 @@ from flowmaticdb.query.ddl import (
     UniqueConstraint,
 )
 from flowmaticdb.query.enums import TypeEnum, ReferentialActionEnum
-
-_MAX_STRING_SIZE = sys.maxsize
+from flowmaticdb import current_timestamp
 
 
 class IfNotExistsMixin:
@@ -159,9 +158,9 @@ class ColumnsDefinitionMixin:
         return self.column(name, TypeEnum.STRING, not_null, default, bits=size)
 
     def text(self, name: str, not_null: bool = False, default: str | None = None) -> Self:
-        return self.string(name, _MAX_STRING_SIZE, not_null, default)
+        return self.string(name, sys.maxsize, not_null, default)
 
-    def date_time(
+    def datetime(
         self,
         name: str,
         size: int = 6,
@@ -169,6 +168,14 @@ class ColumnsDefinitionMixin:
         default: Any = None,
     ) -> Self:
         return self.column(name, TypeEnum.DATETIME, not_null, default, bits=size)
+
+    def current_timestamp(
+            self,
+            name: str,
+            size: int = 6,
+            not_null: bool = False,
+        ) -> Self:
+            return self.datetime(name, size, not_null, current_timestamp())
 
 class AltersMixin:
     _alters: list[AlterABC]
@@ -282,9 +289,9 @@ class AltersMixin:
         return self.add_column(name, TypeEnum.STRING, not_null, default, bits=size)
 
     def add_text(self, name: str, not_null: bool = False, default: str | None = None) -> Self:
-        return self.add_string(name, _MAX_STRING_SIZE, not_null, default)
+        return self.add_string(name, sys.maxsize, not_null, default)
 
-    def add_date_time(
+    def add_datetime(
         self,
         name: str,
         size: int = 6,
@@ -292,3 +299,11 @@ class AltersMixin:
         default: Any = None,
     ) -> Self:
         return self.add_column(name, TypeEnum.DATETIME, not_null, default, bits=size)
+
+    def add_current_timestamp(
+        self,
+        name: str,
+        size: int = 6,
+        not_null: bool = False,
+    ) -> Self:
+        return self.add_datetime(name, size, not_null, current_timestamp())
