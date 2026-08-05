@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import sys
-from typing import Any, Self, TYPE_CHECKING
+from typing import Any, Self
 
 from flowmaticdb.query.ddl import (
     AddColumn,
@@ -20,10 +20,9 @@ from flowmaticdb.query.ddl import (
     RenameColumn,
     UniqueConstraint,
 )
-from flowmaticdb.query.enums import TypeEnum, ReferentialActionEnum
+from flowmaticdb.query.enums import ReferentialActionEnum, TypeEnum
+from flowmaticdb.query.expressions import CurrentTimestamp
 
-if TYPE_CHECKING:
-    from flowmaticdb import current_timestamp
 
 class IfNotExistsMixin:
     _if_not_exists: bool
@@ -176,7 +175,7 @@ class ColumnsDefinitionMixin:
             size: int = 6,
             not_null: bool = False,
         ) -> Self:
-            return self.datetime(name, size, not_null, current_timestamp())
+            return self.datetime(name, size, not_null, CurrentTimestamp())
 
 class AltersMixin:
     _alters: list[AlterABC]
@@ -307,4 +306,4 @@ class AltersMixin:
         size: int = 6,
         not_null: bool = False,
     ) -> Self:
-        return self.add_datetime(name, size, not_null, current_timestamp())
+        return self.add_datetime(name, size, not_null, CurrentTimestamp())
