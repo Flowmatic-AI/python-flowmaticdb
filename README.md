@@ -236,7 +236,7 @@ db.create_table("users").if_not_exists() \
     .string("name", not_null=True) \
     .integer("age") \
     .boolean("active", default=True) \
-    .date_time("created_at") \
+    .datetime("created_at") \
     .execute()
 
 # Using raw column definitions

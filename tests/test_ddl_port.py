@@ -94,11 +94,11 @@ def test_create_table_float_threads_bits(sql_dialect: SQLDialect, mock_db) -> No
 
 
 def test_create_table_date_time_threads_size(sql_dialect: SQLDialect, mock_db) -> None:
-    """date_time()'s size doesn't affect the base dialect's rendering (it has
+    """datetime()'s size doesn't affect the base dialect's rendering (it has
     a single DATETIME mapping) but must still reach the column dict rather
     than silently vanish."""
     q = CreateTableQuery(sql_dialect, "widgets", database=mock_db)
-    q.date_time("created_at", size=3)
+    q.datetime("created_at", size=3)
     col = q._columns[0]
 
     assert col.bits == 3

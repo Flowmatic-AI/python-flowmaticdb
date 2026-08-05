@@ -25,7 +25,7 @@ class Migrator:
             .identity("id") \
             .string("filename", size=255, not_null=True) \
             .integer("batch", not_null=True) \
-            .date_time("applied_at", not_null=True) \
+            .datetime("applied_at", not_null=True) \
             .execute()
 
     def up(self) -> None:
