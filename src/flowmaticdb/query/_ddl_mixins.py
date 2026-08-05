@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import sys
-from typing import Any, Self
+from typing import Any, Self, TYPE_CHECKING
 
 from flowmaticdb.query.ddl import (
     AddColumn,
@@ -21,8 +21,9 @@ from flowmaticdb.query.ddl import (
     UniqueConstraint,
 )
 from flowmaticdb.query.enums import TypeEnum, ReferentialActionEnum
-from flowmaticdb import current_timestamp
 
+if TYPE_CHECKING:
+    from flowmaticdb import current_timestamp
 
 class IfNotExistsMixin:
     _if_not_exists: bool

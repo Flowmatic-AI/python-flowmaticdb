@@ -20,7 +20,7 @@ db = DB.connect_sqlite(":memory:", debug_callback=debug_callback)
 # db = DB.connect_postgresql("postgres", host="localhost", user="postgres", debug_callback=debug_callback)
 # db = DB.connect_mysql("flowmaticdb", host="localhost", user="root", password="", debug_callback=debug_callback)
 
-db.create_table("users").if_not_exists().identity("id").string("name", not_null=True).integer("age").execute()
+db.create_table("users").if_not_exists().identity("id").string("name", not_null=True).integer("age").datetime('created_at').execute()
 
 db.create_table("posts").if_not_exists().identity("id").string("title", not_null=True).text("body").integer("user_id").foreign_key_constraint("user_id", "users", "id", referential_actions=[ReferentialActionEnum.ON_DELETE_CASCADE]).execute()
 
