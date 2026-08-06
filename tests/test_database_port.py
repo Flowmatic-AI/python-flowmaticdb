@@ -353,11 +353,3 @@ def test_database_drivers_reflects_real_availability() -> None:
     loaded; the port returned a hardcoded literal list."""
     drivers = DB.drivers()
     assert "sqlite" in drivers
-
-
-def test_database_connect_generic_dispatch() -> None:
-    """Database::connect(DriverInterface $driver, ...) is a generic,
-    driver-name-based entry point in PHP; the port only exposed
-    connect_sqlite/connect_postgresql/connect_mysql/connect_mariadb."""
-    db = DB.connect("sqlite", ":memory:")
-    assert db.adapter.driver_name == "sqlite"

@@ -192,6 +192,9 @@ class MySQLAdapter(AdapterABC):
             f"unexpected LAST_INSERT_ID() result type: {type(value).__name__}"
         )
 
+    def get_connection(self) -> Any:
+        return self._connection
+
     def close(self) -> None:
         if not self._options.get("persistent", False):
             self._connection.close()

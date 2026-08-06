@@ -139,6 +139,9 @@ class SQLiteAdapter(AdapterABC):
         row = cursor.fetchone()
         return row[0] if row else None
 
+    def get_connection(self) -> Any:
+        return self._connection
+
     def close(self) -> None:
         if self._options.get("optimize", False):
             try:

@@ -29,9 +29,9 @@ No Makefile, CI workflows, or pre-commit hooks exist.
 Five pillars under `src/flowmaticdb/`:
 
 - **`dialects/`** — SQL generation (`SQLDialect` base, `PostgresqlDialect`, `SQLiteDialect`). `SQLDialect` is the largest file (~713 lines).
-- **`adapters/`** — Connection wrappers (`SQLiteAdapter`, `PsycopgAdapter`).
+- **`adapters/`** — Connection wrappers (`SQLiteAdapter`, `PsycopgAdapter`, `AsyncpgAdapter`, `MySQLAdapter`).
 - **`query/`** — Fluent query builders (`SelectQuery`, `InsertQuery`, `UpdateQuery`, `DeleteQuery`, `CreateTableQuery`, `AlterTableQuery`, `DropTableQuery`). Mixins: `WhereMixin`, `HavingMixin`, `JoinsMixin`, etc.
-- **`result/`** — Result set abstraction (`Result`, `SQLite3Result`, `PsycopgResult`). Methods: `fetch_dict()`, `fetch_dicts()`, `scalar()`, `fetch_object()`, `fetch_objects()`, `columns()`.
+- **`result/`** — Result set abstraction (`Result`, `SQLite3Result`, `PsycopgResult`, `AsyncpgResult`, `MySQLResult`). Methods: `fetch_dict()`, `fetch_dicts()`, `scalar()`, `fetch_object()`, `fetch_objects()`, `columns()`.
 - **`migrations/`** — Schema migrations. Subclass `MigrationABC` (`up(db)`/`down(db)` abstract — the `DB` is passed in, not stored on the instance; `in_transaction()` returns `True` by default). `Migrator(db, migrations_dir, migrations_table="migrations")` drives them: `init()`, `up()`, `down()`, `create(name)`.
 
 User-facing facade: `from flowmaticdb.database import DB`
@@ -85,8 +85,10 @@ Within each package, modules named with a leading underscore (e.g. `flowmaticdb.
   - `SQLiteAdapter.query_with_params()` calls `percent_s_to_question_marks()` — `%s` → `?` (SQLite uses `?` natively)
   - `PsycopgAdapter.query_with_params()` calls `question_marks_to_percent_s()` — `?` → `%s` (psycopg uses `%s`)
   - `MySQLAdapter.query_with_params()` calls `question_marks_to_percent_s()` — `?` → `%s` (mysql.connector uses `%s`)
+  - `AsyncpgAdapter.query_with_params()` calls the module-local `_placeholders_to_dollar_signs()` — both `?` and `%s` → `$1`, `$2`, … (asyncpg only speaks native PostgreSQL placeholders)
   - Both methods are on `QueryWithParams` and use `REGEX_PATTERN` to skip placeholders inside quoted strings and comments.
   - The `DatabaseABC.prepared()` method passes the `QueryWithParams` through unchanged — the adapter handles conversion.
+- **Two PostgreSQL drivers** — `Database.connect_postgresql(..., asyncpg_adapter=True)` selects `AsyncpgAdapter`; the default is `PsycopgAdapter`. Both share `PostgresqlDialect`. asyncpg is coroutine-only, so `AsyncpgAdapter` owns a private event loop on a daemon thread and blocks on `run_coroutine_threadsafe` — that keeps the synchronous `AdapterABC` surface intact and also works when called from inside a running loop. It binds temporal values natively instead of using the dialect's strftime cast, and rejects the `client_encoding` option (asyncpg is UTF-8 only).
 - **MySQL now uses `autocommit=True`** — `MySQLAdapter._connect()` passes `autocommit=True` to `mysql.connector.connect()`. Every statement commits immediately. No implicit transaction workarounds needed.
 - **Fluent table reassignment** — use `.table("new_table")` instead of `.from_("new_table")` on `SelectQuery`, `DeleteQuery`, and `DropTableQuery`.
 - **Qualified column references** — pass columns/conditions as two-element lists (e.g. `["users", "id"]`) or wrap in `identifier(["users","id"])`. A dotted string like `"users.id"` is treated as a single identifier and escaped as `` `users.id` `` (non-existent column). Use `raw("...")` (a `SqlABC`) for raw JOIN clauses and aggregate expressions — `JoinsMixin.join()` ignores bare strings.

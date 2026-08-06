@@ -13,13 +13,16 @@ services).
 """
 from __future__ import annotations
 
+import asyncio
+import importlib.util
 import socket
 from collections.abc import Iterator
+from datetime import datetime
 from typing import Any
 
 import pytest
 
-from flowmaticdb import QueryWithParams, expression, identifier, raw
+from flowmaticdb import AdapterError, QueryWithParams, expression, identifier, raw
 from flowmaticdb.adapters import AdapterABC, PsycopgAdapter
 from flowmaticdb.database import DB
 from flowmaticdb.dialects import PostgresqlDialect
@@ -754,3 +757,187 @@ def test_postgres_adapter_version(pg_adapter: PsycopgAdapter) -> None:
     assert version != "0"
     parts = version.split(".")
     assert len(parts) >= 2 and all(p.isdigit() for p in parts)
+
+
+asyncpg_available = importlib.util.find_spec("asyncpg") is not None
+
+requires_asyncpg = pytest.mark.skipif(
+    not asyncpg_available,
+    reason="asyncpg is not installed; run `pip install flowmaticdb[asyncpg]`.",
+)
+
+
+@pytest.fixture
+def asyncpg_db() -> Iterator[DB]:
+    """Yield a DB facade backed by the AsyncpgAdapter; close afterwards."""
+    db = DB.connect_postgresql(
+        PG_DBNAME,
+        host=PG_HOST,
+        port=PG_PORT,
+        user=PG_USER,
+        password=PG_PASSWORD,
+        asyncpg_adapter=True,
+    )
+    try:
+        yield db
+    finally:
+        db.adapter.close()
+
+
+@requires_asyncpg
+def test_asyncpg_flag_selects_the_asyncpg_adapter(asyncpg_db: DB) -> None:
+    """connect_postgresql(asyncpg_adapter=True) swaps the driver but keeps the dialect."""
+    from flowmaticdb.adapters import AsyncpgAdapter
+
+    assert isinstance(asyncpg_db.adapter, AsyncpgAdapter)
+    assert asyncpg_db.adapter.driver_name == "postgresql"
+    assert isinstance(asyncpg_db.dialect, PostgresqlDialect)
+    assert asyncpg_db.adapter.version() != "0"
+
+
+@requires_asyncpg
+def test_asyncpg_crud_and_column_types(asyncpg_db: DB) -> None:
+    """Placeholders, native parameter binding and column metadata over asyncpg."""
+    adapter, dialect = asyncpg_db.adapter, asyncpg_db.dialect
+    _drop(adapter, "asyncpg_users")
+
+    adapter.exec(
+        'CREATE TABLE "asyncpg_users" ('
+        '"id" SERIAL PRIMARY KEY, "name" TEXT NOT NULL, "active" BOOLEAN, "seen" TIMESTAMP)'
+    )
+
+    # `?` placeholders are renumbered to $1/$2/..., booleans and datetimes bind natively.
+    seen = datetime(2026, 1, 2, 3, 4, 5)  # noqa: DTZ001 - the column is TIMESTAMP WITHOUT TIME ZONE
+    adapter.query_with_params(
+        dialect,
+        QueryWithParams(
+            query='INSERT INTO "asyncpg_users" ("name", "active", "seen") VALUES (?, ?, ?)',
+            params=["alice", True, seen],
+        ),
+    )
+    # `%s` placeholders are accepted too.
+    adapter.query_with_params(
+        dialect,
+        QueryWithParams(
+            query='INSERT INTO "asyncpg_users" ("name", "active") VALUES (%s, %s)',
+            params=["bob", False],
+        ),
+    )
+
+    result: ResultABC = adapter.query('SELECT "id", "name", "active", "seen" FROM "asyncpg_users" ORDER BY "id"')
+    assert result.columns() == {"id": "integer", "name": "text", "active": "bool", "seen": "timestamp"}
+
+    rows = result.fetch_dicts()
+    assert [row["name"] for row in rows] == ["alice", "bob"]
+    assert rows[0]["active"] is True
+    assert rows[0]["seen"] == seen
+    assert rows[1]["seen"] is None
+
+    assert adapter.last_insert_id() == 2
+    assert adapter.last_insert_id("asyncpg_users_id_seq") == 2
+
+    _drop(adapter, "asyncpg_users")
+
+
+@requires_asyncpg
+def test_asyncpg_emulate_prepare_inlines_params(asyncpg_db: DB) -> None:
+    """emulate_prepare renders the parameters into the SQL instead of binding them."""
+    result = asyncpg_db.adapter.query_with_params(
+        asyncpg_db.dialect,
+        QueryWithParams(query="SELECT ? AS n, ? AS s", params=[7, "seven"]),
+        emulate_prepare=True,
+    )
+    assert result.fetch_dict() == {"n": 7, "s": "seven"}
+
+
+@requires_asyncpg
+def test_asyncpg_transactions_and_savepoints(asyncpg_db: DB) -> None:
+    """Transaction state is read back from the live connection, not tracked locally."""
+    db = asyncpg_db
+    adapter = db.adapter
+    _drop(adapter, "asyncpg_tx")
+    adapter.exec('CREATE TABLE "asyncpg_tx" ("name" TEXT)')
+
+    assert db.in_transaction is False
+    db.begin_transaction()
+    assert db.in_transaction is True
+    adapter.exec("""INSERT INTO "asyncpg_tx" ("name") VALUES ('rolled-back')""")
+    db.rollback_transaction()
+    assert db.in_transaction is False
+    assert adapter.query('SELECT COUNT(*) AS c FROM "asyncpg_tx"').scalar() == 0
+
+    db.begin_transaction()
+    db.begin_transaction("sp1")
+    adapter.exec("""INSERT INTO "asyncpg_tx" ("name") VALUES ('savepoint')""")
+    db.rollback_transaction(name="sp1")
+    adapter.exec("""INSERT INTO "asyncpg_tx" ("name") VALUES ('kept')""")
+    db.commit_transaction()
+    assert adapter.query('SELECT "name" FROM "asyncpg_tx"').scalars() == ["kept"]
+
+    _drop(adapter, "asyncpg_tx")
+
+
+@requires_asyncpg
+def test_asyncpg_startup_queries_and_debug_callback() -> None:
+    """Startup queries run on connect and every statement reaches the debug callback."""
+    seen: list[tuple[str, str | None]] = []
+
+    db = DB.connect_postgresql(
+        PG_DBNAME,
+        host=PG_HOST,
+        port=PG_PORT,
+        user=PG_USER,
+        password=PG_PASSWORD,
+        startup_queries=["SET TIME ZONE 'UTC'"],
+        debug_callback=lambda sql, duration, error: seen.append((sql, error)),
+        asyncpg_adapter=True,
+    )
+    try:
+        assert seen[0] == ("SET TIME ZONE 'UTC'", None)
+        assert db.adapter.query("SELECT current_setting('TimeZone') AS tz").scalar() == "UTC"
+        assert [entry for entry in seen if entry[1] is not None] == []
+    finally:
+        db.adapter.close()
+
+
+@requires_asyncpg
+def test_asyncpg_usable_from_inside_a_running_event_loop() -> None:
+    """The adapter owns a background loop, so blocking calls work inside asyncio.run."""
+
+    async def run() -> Any:
+        db = DB.connect_postgresql(
+            PG_DBNAME,
+            host=PG_HOST,
+            port=PG_PORT,
+            user=PG_USER,
+            password=PG_PASSWORD,
+            asyncpg_adapter=True,
+        )
+        try:
+            return db.adapter.query("SELECT 42 AS answer").scalar()
+        finally:
+            db.adapter.close()
+
+    assert asyncio.run(run()) == 42
+
+
+@requires_asyncpg
+def test_asyncpg_close_is_idempotent(asyncpg_db: DB) -> None:
+    """Closing twice must not raise on the already-stopped event loop."""
+    asyncpg_db.adapter.close()
+    asyncpg_db.adapter.close()
+
+
+@requires_asyncpg
+def test_asyncpg_rejects_client_encoding_option() -> None:
+    """asyncpg is UTF-8 only, so the psycopg client_encoding option is refused loudly."""
+    with pytest.raises(AdapterError):
+        DB.connect_postgresql(
+            PG_DBNAME,
+            host=PG_HOST,
+            port=PG_PORT,
+            user=PG_USER,
+            password=PG_PASSWORD,
+            options={"client_encoding": "LATIN1"},
+            asyncpg_adapter=True,
+        )

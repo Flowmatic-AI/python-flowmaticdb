@@ -103,5 +103,9 @@ class AdapterABC(ABC):
         ...
 
     @abstractmethod
+    def get_connection(self) -> Any:
+        ...
+
+    @abstractmethod
     def close(self) -> None:
         ...

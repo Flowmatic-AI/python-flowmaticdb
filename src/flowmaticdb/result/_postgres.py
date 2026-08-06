@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Sequence
 from typing import Any
 
 from flowmaticdb.result._base import ResultABC
@@ -41,6 +42,31 @@ class PsycopgResult(ResultABC):
             return [dict(r) for r in rows]
         cols = list(self._columns_cache.keys())
         return [dict(zip(cols, row)) for row in rows]
+
+
+class AsyncpgResult(ResultABC):
+    """asyncpg fetches are coroutines, so rows are already materialised by the
+    adapter before the result is handed back to the caller."""
+
+    def __init__(self, attributes: Sequence[Any], records: Sequence[Any]) -> None:
+        self._columns: dict[str, str] = {
+            attribute.name: _PG_TYPE_NAMES.get(attribute.type.oid, "text") for attribute in attributes
+        }
+        self._rows: list[dict[str, Any]] = [dict(record) for record in records]
+
+    def columns(self) -> dict[str, str]:
+        return dict(self._columns)
+
+    def fetch_dict(self) -> dict[str, Any] | None:
+        if not self._rows:
+            return None
+        return self._rows.pop(0)
+
+    def fetch_dicts(self) -> list[dict[str, Any]]:
+        rows = list(self._rows)
+        self._rows.clear()
+        return rows
+
 
 _PG_TYPE_NAMES: dict[int, str] = {
     16: "bool",
