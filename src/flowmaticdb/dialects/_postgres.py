@@ -3,6 +3,7 @@ from __future__ import annotations
 import dataclasses
 import re
 from collections.abc import Mapping
+from datetime import UTC, datetime
 from typing import Any, ClassVar
 
 from flowmaticdb.dialects._sql_dialect import SQLDialect
@@ -11,6 +12,10 @@ from flowmaticdb.query.ddl import Column
 from flowmaticdb.query.enums import ConditionEnum, TypeEnum
 
 _TZ_OFFSET_RE = re.compile(r"([+-]\d{2})$")
+
+# TIMESTAMP WITHOUT TIME ZONE columns and pre-timestamptz data still come back
+# without an offset; those are read as UTC.
+_NAIVE_DATETIME_FORMAT = "%Y-%m-%d %H:%M:%S.%f"
 
 
 class PostgresqlDialect(SQLDialect):
@@ -33,7 +38,7 @@ class PostgresqlDialect(SQLDialect):
         self.on_conflict = True
         self.returning = True
         self.lateral = True
-        self.datetime_format = "%Y-%m-%d %H:%M:%S.%f"
+        self.datetime_format = "%Y-%m-%d %H:%M:%S.%f%z"
         self._version_gate()
 
     def _version_gate(self) -> None:
@@ -118,9 +123,25 @@ class PostgresqlDialect(SQLDialect):
     def cast_bool(self, value: bool) -> bool | int:
         return value
 
+    def cast_datetime(self, value: Any) -> str:
+        # %z renders nothing for a naive datetime, which would defeat the point
+        # of a timestamptz column -- read those as UTC, matching how naive
+        # strings are parsed back.
+        if isinstance(value, datetime) and value.tzinfo is None:
+            value = value.replace(tzinfo=UTC)
+        return super().cast_datetime(value)
+
     def parse_datetime(self, value: Any) -> Any:
         if isinstance(value, str):
             value = _TZ_OFFSET_RE.sub(r"\1:00", value)
+            try:
+                return datetime.strptime(value, self.datetime_format)
+            except ValueError:
+                pass
+            try:
+                return datetime.strptime(value, _NAIVE_DATETIME_FORMAT).replace(tzinfo=UTC)
+            except ValueError:
+                pass
         return super().parse_datetime(value)
 
     def type(self, type_enum: TypeEnum, bits: int | None = None) -> str:
@@ -128,5 +149,5 @@ class PostgresqlDialect(SQLDialect):
         if type_enum == TypeEnum.FLOAT:
             return "DOUBLE PRECISION" if size > 32 else "REAL"
         if type_enum == TypeEnum.DATETIME:
-            return "TIMESTAMP"
+            return "TIMESTAMPTZ"
         return super().type(type_enum, bits)

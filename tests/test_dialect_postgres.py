@@ -118,7 +118,7 @@ def test_pg_type_mapping(pg_dialect: PostgresqlDialect) -> None:
     assert pg_dialect.type(TypeEnum.INT) == "INTEGER"
     assert pg_dialect.type(TypeEnum.FLOAT) == "REAL"
     assert pg_dialect.type(TypeEnum.FLOAT, 64) == "DOUBLE PRECISION"
-    assert pg_dialect.type(TypeEnum.DATETIME) == "TIMESTAMP"
+    assert pg_dialect.type(TypeEnum.DATETIME) == "TIMESTAMPTZ"
 
 
 def test_pg_like_case_sensitive_by_default(pg_dialect: PostgresqlDialect) -> None:
