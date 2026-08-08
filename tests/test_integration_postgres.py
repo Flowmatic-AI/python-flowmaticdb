@@ -271,14 +271,14 @@ def test_postgres_joins(pg_adapter: PsycopgAdapter, pg_dialect: PostgresqlDialec
 
     q = SelectQuery(dialect, "j_users", database=db)
     q.columns([identifier(["j_users", "name"]), identifier(["j_posts", "title"])])
-    q.inner_join("j_posts").on(["j_users", "id"], ["j_posts", "user_id"])
+    q.inner_join("j_posts", lambda join: join.on(["j_users", "id"], ["j_posts", "user_id"]))
     rows: list[dict[str, Any]] = adapter.query_with_params(dialect, q.to_query_with_params()).fetch_dicts()
     assert len(rows) == 2
     assert all(r["name"] == "Alice" for r in rows)
 
     q = SelectQuery(dialect, "j_users", database=db)
     q.columns([identifier(["j_users", "name"]), identifier(["j_posts", "title"])])
-    q.left_join("j_posts").on(["j_users", "id"], ["j_posts", "user_id"])
+    q.left_join("j_posts", lambda join: join.on(["j_users", "id"], ["j_posts", "user_id"]))
     rows = adapter.query_with_params(dialect, q.to_query_with_params()).fetch_dicts()
     names: dict[str, Any] = {r["name"]: r["title"] for r in rows}
     assert names["Bob"] is None
@@ -663,7 +663,7 @@ def test_postgres_giant_select(pg_adapter: PsycopgAdapter, pg_dialect: Postgresq
 
     q = SelectQuery(dialect, Alias("g_users", "u"), database=db)
     q.columns([identifier(["u", "name"]), expression('count("p"."id") AS post_count')])
-    q.inner_join("g_posts", "p").on(["u", "id"], ["p", "user_id"])
+    q.inner_join_table("g_posts", lambda join: join.on(["u", "id"], ["p", "user_id"]), "p")
     q.where_greater_than_or_equals("age", 25)
     q.where_in("name", ["Alice", "Bob"])
     q.where_between("age", 20, 40)

@@ -107,7 +107,6 @@ def test_select_where_group(sql_dialect: SQLDialect, mock_db) -> None:
 
 def test_select_join(sql_dialect: SQLDialect, mock_db) -> None:
     q: SelectQuery = SelectQuery(sql_dialect, "users", database=mock_db)
-    j = q.left_join("posts")
-    j.on("users.id", "posts.user_id")
+    q.left_join("posts", lambda join: join.on("users.id", "posts.user_id"))
     qwp: QueryWithParams = q.to_query_with_params()
     assert "LEFT JOIN" in qwp.query

@@ -8,7 +8,7 @@ from flowmaticdb.query._condition import Condition
 from flowmaticdb.query._condition_group import ConditionGroupABC
 from flowmaticdb.query._condition_mixin import ConditionMixin
 from flowmaticdb.query.enums import ChainEnum, JoinEnum
-from flowmaticdb.query.expressions import SqlABC
+from flowmaticdb.query.expressions import SqlABC, Identifier
 
 if TYPE_CHECKING:
     from flowmaticdb.query._select import SelectQuery
@@ -264,9 +264,9 @@ class Join(ConditionMixin):
         return self
 
     def on(self, left: list[str], right: list[str]) -> Self:
-        self._equals(self.conditions, left, right, cast=True)
+        self._equals(self.conditions, left, Identifier(right))
         return self
 
     def or_on(self, left: list[str], right: list[str]) -> Self:
-        self._equals(self.conditions, left, right, cast=True, chain=ChainEnum.OR)
+        self._equals(self.conditions, left, Identifier(right), chain=ChainEnum.OR)
         return self

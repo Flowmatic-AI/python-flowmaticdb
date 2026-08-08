@@ -148,42 +148,45 @@ def test_join_or_where_not_empty_chains_with_or_not_and() -> None:
 
 def test_select_has_full_join_api(sql_dialect: SQLDialect, mock_db) -> None:
     q = SelectQuery(sql_dialect, "users", database=mock_db)
-    assert isinstance(q.inner_join_table("posts"), Join)
-    assert isinstance(q.cross_join_table("posts"), Join)
-    assert isinstance(q.left_join_lateral("posts"), Join)
-    assert isinstance(q.inner_join_lateral("posts"), Join)
-    assert isinstance(q.cross_join_lateral("posts"), Join)
-    assert isinstance(q.outer_apply("posts"), Join)
-    assert isinstance(q.cross_apply("posts"), Join)
+    assert q.inner_join_table("posts") is q
+    assert q.cross_join_table("posts") is q
+    assert q.left_join_lateral("posts") is q
+    assert q.inner_join_lateral("posts") is q
+    assert q.cross_join_lateral("posts") is q
+    assert q.outer_apply("posts") is q
+    assert q.cross_apply("posts") is q
+    assert len(q.joins) == 7
+    assert all(isinstance(j, Join) for j in q.joins)
 
 
 def test_outer_apply_maps_to_left_join_lateral(sql_dialect: SQLDialect, mock_db) -> None:
     q = SelectQuery(sql_dialect, "users", database=mock_db)
-    j = q.outer_apply("posts")
-    assert j.join == JoinEnum.LEFT_JOIN_LATERAL
+    q.outer_apply("posts")
+    assert q.joins[0].join == JoinEnum.LEFT_JOIN_LATERAL
 
 
 def test_cross_apply_maps_to_inner_join_lateral(sql_dialect: SQLDialect, mock_db) -> None:
     q = SelectQuery(sql_dialect, "users", database=mock_db)
-    j = q.cross_apply("posts")
-    assert j.join == JoinEnum.INNER_JOIN_LATERAL
+    q.cross_apply("posts")
+    assert q.joins[0].join == JoinEnum.INNER_JOIN_LATERAL
 
 
 def test_left_join_lateral_takes_raw_table_not_subquery_only(sql_dialect: SQLDialect, mock_db) -> None:
     q = SelectQuery(sql_dialect, "users", database=mock_db)
-    j = q.left_join_lateral("posts", "p")
-    assert j.join == JoinEnum.LEFT_JOIN_LATERAL
+    q.left_join_lateral_table("posts", alias="p")
+    assert q.joins[0].join == JoinEnum.LEFT_JOIN_LATERAL
 
 
 def test_left_join_lateral_sub_query_still_available(sql_dialect: SQLDialect, mock_db) -> None:
     inner = SelectQuery(sql_dialect, "posts", database=mock_db)
     q = SelectQuery(sql_dialect, "users", database=mock_db)
-    j = q.left_join_lateral_sub_query(inner, "p")
-    assert j.join == JoinEnum.LEFT_JOIN_LATERAL
+    q.left_join_lateral_sub_query(inner, "p")
+    assert q.joins[0].join == JoinEnum.LEFT_JOIN_LATERAL
 
 
 def test_inner_join_sub_query_and_cross_join_sub_query_exist(sql_dialect: SQLDialect, mock_db) -> None:
     inner = SelectQuery(sql_dialect, "posts", database=mock_db)
     q = SelectQuery(sql_dialect, "users", database=mock_db)
-    assert isinstance(q.inner_join_sub_query(inner, "p"), Join)
-    assert isinstance(q.cross_join_sub_query(inner, "p"), Join)
+    assert q.inner_join_sub_query(inner, "p") is q
+    assert q.cross_join_sub_query(inner, "p") is q
+    assert [j.join for j in q.joins] == [JoinEnum.INNER_JOIN, JoinEnum.CROSS_JOIN]

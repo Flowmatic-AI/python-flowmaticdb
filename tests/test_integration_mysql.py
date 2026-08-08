@@ -395,8 +395,7 @@ def test_mysql_joins(
 
     q: SelectQuery = SelectQuery(dialect, "users", database=db)
     q.columns(["name", "title"])
-    j = q.inner_join("posts")
-    j.on(["users", "id"], ["posts", "user_id"])
+    q.inner_join("posts", lambda join: join.on(["users", "id"], ["posts", "user_id"]))
     q.order_by_asc("title")
 
     qwp: QueryWithParams = q.to_query_with_params()
@@ -418,8 +417,7 @@ def test_mysql_joins(
 
     q2: SelectQuery = SelectQuery(dialect, "users", database=db)
     q2.columns(["name", "title"])
-    lj = q2.left_join("posts")
-    lj.on(["users", "id"], ["posts", "user_id"])
+    q2.left_join("posts", lambda join: join.on(["users", "id"], ["posts", "user_id"]))
     q2.order_by_asc("name")
 
     qwp2: QueryWithParams = q2.to_query_with_params()
@@ -445,8 +443,8 @@ def test_mysql_joins(
 
     q4: SelectQuery = SelectQuery(dialect, "users", database=db)
     q4.columns(["name", "title"])
-    cj = q4.cross_join("posts")
-    assert cj.conditions == []
+    q4.cross_join("posts")
+    assert q4.joins[0].conditions == []
 
     qwp4: QueryWithParams = q4.to_query_with_params()
     result4: ResultABC = adapter.query_with_params(dialect, qwp4)
@@ -987,8 +985,7 @@ def test_mysql_giant_select(
         ]
     )
 
-    inner = q.inner_join("posts")
-    inner.on(["users", "id"], ["posts", "user_id"])
+    q.inner_join("posts", lambda join: join.on(["users", "id"], ["posts", "user_id"]))
 
     q.where_greater_than(["users", "age"], 18)
     q.where_in(["users", "id"], [1, 2, 3])

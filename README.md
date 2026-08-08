@@ -401,21 +401,26 @@ from flowmaticdb import raw, identifier
 
 query = db.select("users").columns(["users.id", "posts.title"])
 
-# INNER JOIN with ON conditions
-join = query.inner_join("posts", "p")  # Returns Join object
-join.on(["users", "id"], ["p", "user_id"])    # ON users.id = p.user_id
-join.or_on(["p", "status"], ["'published'"])   # OR p.status = 'published'
+# INNER JOIN with ON conditions — the callback receives the Join,
+# every join method returns the query so you can keep chaining
+query.inner_join_table(
+    "posts",
+    lambda join: join
+        .on(["users", "id"], ["p", "user_id"])       # ON users.id = p.user_id
+        .or_on(["p", "status"], ["'published'"]),    # OR p.status = 'published'
+    "p",
+)
 
 # LEFT JOIN
-query.left_join("comments", "c").on(["p", "id"], ["c", "post_id"])
+query.left_join_table("comments", lambda join: join.on(["p", "id"], ["c", "post_id"]), "c")
 
-# CROSS JOIN
+# CROSS JOIN (never takes ON conditions)
 query.cross_join("sessions")
 
 # LATERAL joins
-query.left_join_lateral(sub_query, "sq")
-query.inner_join_lateral(sub_query, "sq")
-query.cross_join_lateral(sub_query, "sq")
+query.left_join_lateral_sub_query(sub_query, "sq")
+query.inner_join_lateral_sub_query(sub_query, "sq")
+query.cross_join_lateral_sub_query(sub_query, "sq")
 
 # Raw join SQL (e.g. for aggregates)
 query.join(raw("LEFT JOIN (SELECT user_id, count(*) AS cnt FROM orders GROUP BY user_id) AS o ON o.user_id = users.id"))
@@ -426,9 +431,12 @@ query.join(raw("LEFT JOIN (SELECT user_id, count(*) AS cnt FROM orders GROUP BY 
 `Join` objects support all the same condition methods as WHERE:
 
 ```python
-join = query.inner_join("orders")
-join.where_equals(["orders", "user_id"], ["users", "id"])
-join.where_greater_than("orders.total", 100)
+query.inner_join(
+    "orders",
+    lambda join: join
+        .where_equals(["orders", "user_id"], ["users", "id"])
+        .where_greater_than("orders.total", 100),
+)
 ```
 
 ---

@@ -16,8 +16,8 @@ def debug_callback(query: str, starttime: float, error: str | None):
     if error:
         print(f"[ERROR] {error}")
 
-# db = DB.connect_sqlite(":memory:", debug_callback=debug_callback)
-db = DB.connect_postgresql("postgres", host="localhost", user="postgres", debug_callback=debug_callback, asyncpg_adapter=True)
+db = DB.connect_sqlite(":memory:", debug_callback=debug_callback)
+# db = DB.connect_postgresql("postgres", host="localhost", user="postgres", debug_callback=debug_callback, asyncpg_adapter=True)
 # db = DB.connect_mysql("flowmaticdb", host="localhost", user="root", password="", debug_callback=debug_callback)
 
 db.create_table("users").if_not_exists().identity("id").string("name", not_null=True).integer("age").current_timestamp("updated_at").datetime('created_at').execute()
@@ -52,7 +52,17 @@ for u in users:
 db.update("users").updates({"age": 26}).where_equals("name", "Bob").where_group(lambda group: group.where_not_equals('name', 'Alice')).execute()
 print("\nUpdated Bob's age to 26.")
 
-result = db.select("users").where_equals("name", "Bob").execute()
+result = db.select("users")\
+    .where_equals("name", "Bob")\
+    .left_join(
+        "posts",
+        lambda join: join.on(
+            ["users", "id"], 
+            ["posts", "user_id"]
+            )
+        )\
+    .execute()
+
 print("\nBob after update:", result.fetch_dict())
 
 db.delete("users").where_equals("name", "Alice").execute()
@@ -79,10 +89,16 @@ subq_young  = db.select("users").columns(["id"]).where_less_than("age", 30)
 
 bigQuery.distinct()
 
-join_posts = bigQuery.inner_join("posts", "p")
-join_posts.on(["users", "id"], ["p", "user_id"])
-join_comments = bigQuery.left_join("comments", "c")
-join_comments.on(["p", "id"], ["c", "post_id"]).where_between(['c', 'id'], 0, 999)
+bigQuery.inner_join_table(
+    "posts",
+    lambda join: join.on(["users", "id"], ["p", "user_id"]),
+    "p",
+)
+bigQuery.left_join_table(
+    "comments",
+    lambda join: join.on(["p", "id"], ["c", "post_id"]).where_between(["c", "id"], 0, 999),
+    "c",
+)
 bigQuery.cross_join("sessions")
 
 bigQuery = (
