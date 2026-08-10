@@ -10,7 +10,7 @@ MySQL-specific adapter, dialect and result set implementation:
 
     * ``MySQLAdapter`` — wraps ``mysql.connector`` and converts ``?`` to ``%s``.
     * ``MySQLDialect`` — backtick escaping, ``ON DUPLICATE KEY UPDATE`` instead
-      of ``ON CONFLICT``, no ``RETURNING``, ``TINYINT(1)`` booleans.
+      of ``ON CONFLICT``, no ``RETURNING``, ``TINYINT`` booleans.
     * ``MySQLResult`` — cursor-backed result set.
 
 Run with::
@@ -752,7 +752,7 @@ def test_mysql_alter_table(
 
     for qwp_ in dialect.alter_table(
         "articles",
-        [AlterColumn(column="title", type=TypeEnum.STRING, bits=100)],
+        [AlterColumn(column="title", sql="VARCHAR(100)")],
     ):
         adapter.exec(qwp_.query)
     assert _column_type(adapter, "articles", "title") == "varchar(100)"
@@ -817,7 +817,7 @@ def _column_type(adapter: MySQLAdapter, table: str, column: str) -> str:
     """Return the lower-cased SQL column type string for *table.column*.
 
     Uses ``COLUMN_TYPE`` from ``information_schema`` so the full spec including
-    length (e.g. ``varchar(100)``, ``tinyint(1)``) is returned.
+    length (e.g. ``varchar(100)``, ``decimal(10,2)``) is returned.
     """
     result: ResultABC = adapter.query(
         "SELECT `COLUMN_TYPE` AS t FROM `information_schema`.`COLUMNS` "
@@ -873,7 +873,9 @@ def test_mysql_ddl(
     cols = _column_names(adapter, "typed")
     assert cols == ["id", "flag", "score", "label", "created_at"]
 
-    assert _column_type(adapter, "typed", "flag") == "tinyint(1)"
+    # TypeEnum.BOOL maps to a bare TINYINT (see MySQLDialect.type), so MySQL
+    # reports no display width -- "tinyint(1)" would mean a BOOL/BOOLEAN column.
+    assert _column_type(adapter, "typed", "flag") == "tinyint"
 
     adapter.query_with_params(
         dialect,

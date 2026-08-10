@@ -790,31 +790,7 @@ class SQLDialect(DialectABC):
         return f"ADD COLUMN {self._build_column(alter)}"
 
     def _build_alter_table_alter_column(self, alter: AlterColumn) -> str:
-        col_name = self.escape_identifier(alter.column)
-
-        if alter.sql is not None:
-            return f"ALTER COLUMN {col_name} {alter.sql}"
-
-        if alter.type is not None:
-            sql_type = alter.type
-            if isinstance(sql_type, TypeEnum):
-                sql_type = self.type(sql_type, alter.bits)
-            return f"ALTER COLUMN {col_name} TYPE {sql_type}"
-
-        if alter.default is not None:
-            return f"ALTER COLUMN {col_name} SET DEFAULT {alter.default}"
-
-        if alter.not_null is not None:
-            return (
-                f"ALTER COLUMN {col_name} SET NOT NULL"
-                if alter.not_null
-                else f"ALTER COLUMN {col_name} DROP NOT NULL"
-            )
-
-        if alter.drop_default:
-            return f"ALTER COLUMN {col_name} DROP DEFAULT"
-
-        return f"ALTER COLUMN {col_name}"
+        return f"ALTER COLUMN {self.escape_identifier(alter.column)} {alter.sql}"
 
     def _build_alter_table_rename_column(self, alter: RenameColumn) -> str:
         return f"RENAME COLUMN {self.escape_identifier(alter.old_name)} TO {self.escape_identifier(alter.new_name)}"

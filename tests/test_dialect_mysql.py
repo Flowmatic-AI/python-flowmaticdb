@@ -3,7 +3,7 @@ from __future__ import annotations
 from flowmaticdb import QueryWithParams
 from flowmaticdb.dialects import MySQLDialect
 from flowmaticdb.query import Condition, OnConflict
-from flowmaticdb.query.ddl import AddColumn, Column, DropConstraint, RenameColumn
+from flowmaticdb.query.ddl import AddColumn, AlterColumn, Column, DropConstraint, RenameColumn
 from flowmaticdb.query.enums import ConditionEnum, TypeEnum
 from flowmaticdb.query.expressions import CurrentTimestamp
 
@@ -581,3 +581,14 @@ def test_mysql_version_gating(mysql_dialect: MySQLDialect) -> None:
 
     mysql_8020 = MySQLDialect(version="8.0.20")
     assert mysql_8020.lateral is True
+
+
+
+def test_mysql_alter_column_raw_sql_uses_modify(mysql_dialect: MySQLDialect) -> None:
+    qwps: list[QueryWithParams] = mysql_dialect.alter_table(
+        "articles",
+        [AlterColumn(column="title", sql="VARCHAR(50) NOT NULL")],
+    )
+    assert [q.query for q in qwps] == [
+        "ALTER TABLE `articles` MODIFY COLUMN `title` VARCHAR(50) NOT NULL"
+    ]

@@ -101,7 +101,7 @@ def test_sqlite_alter_raises(sqlite_dialect: SQLiteDialect) -> None:
     from flowmaticdb.query.ddl import AddPrimaryKeys, AlterColumn
 
     with pytest.raises(QueryError):
-        sqlite_dialect._build_alter("test", AlterColumn(column="age"))
+        sqlite_dialect._build_alter("test", AlterColumn(column="age", sql="TYPE BIGINT"))
 
     with pytest.raises(QueryError):
         sqlite_dialect._build_alter("test", AddPrimaryKeys(columns=["id"]))

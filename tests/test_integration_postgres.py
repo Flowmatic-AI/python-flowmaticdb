@@ -338,7 +338,9 @@ def test_postgres_conditions(pg_adapter: PsycopgAdapter, pg_dialect: PostgresqlD
     q = SelectQuery(dialect, "cond_t", database=db)
     q.where_like("name", "%a%")
     rows = adapter.query_with_params(dialect, q.to_query_with_params()).fetch_dicts()
-    assert {r["name"] for r in rows} == {"Alice", "Charlie", "Dora"}
+    # LIKE is case-sensitive in PostgreSQL, so "Alice" (whose only "a" is the
+    # capital "A") is not a match; use ILIKE for case-insensitive matching.
+    assert {r["name"] for r in rows} == {"Charlie", "Dora"}
 
     adapter.exec('ALTER TABLE "cond_t" ADD COLUMN "nick" TEXT')
     adapter.exec("UPDATE \"cond_t\" SET \"nick\" = 'Al' WHERE \"name\" = 'Alice'")

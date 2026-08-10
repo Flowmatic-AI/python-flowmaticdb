@@ -6,11 +6,18 @@ Database/Queries/Table.php against src/flowmaticdb/database/*.py.
 """
 from __future__ import annotations
 
+from typing import Any
+
 from flowmaticdb.database import DB, Table
 
 
 def _fresh_db() -> DB:
     return DB.connect_sqlite(":memory:")
+
+
+def _sqlite_master_tables(db: DB) -> list[dict[str, Any]]:
+    """Return the `sqlite_master` rows describing the tables that exist."""
+    return db.query("SELECT `name` FROM `sqlite_master` WHERE `type` = 'table'").fetch_dicts()
 
 
 def _create_users_table(db: DB) -> None:
@@ -135,10 +142,10 @@ def test_table_create_returns_unexecuted_query() -> None:
     table = db.table("widgets")
 
     query = table.create_if_not_exists(lambda q: q.identity("id").string("name"))
-    assert not any(t["name"] == "widgets" for t in db.sqlite_master_tables())
+    assert not any(t["name"] == "widgets" for t in _sqlite_master_tables(db))
 
     query.execute()
-    assert any(t["name"] == "widgets" for t in db.sqlite_master_tables())
+    assert any(t["name"] == "widgets" for t in _sqlite_master_tables(db))
 
 
 def test_table_drop_returns_unexecuted_query() -> None:
@@ -149,10 +156,10 @@ def test_table_drop_returns_unexecuted_query() -> None:
     table = db.table("users")
     query = table.drop_if_exists()
 
-    assert any(t["name"] == "users" for t in db.sqlite_master_tables())
+    assert any(t["name"] == "users" for t in _sqlite_master_tables(db))
 
     query.execute()
-    assert not any(t["name"] == "users" for t in db.sqlite_master_tables())
+    assert not any(t["name"] == "users" for t in _sqlite_master_tables(db))
 
 
 def test_table_columns_uses_generic_select_introspection() -> None:
