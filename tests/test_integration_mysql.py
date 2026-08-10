@@ -1089,13 +1089,10 @@ def test_mysql_datetime_and_json_columns(
     assert row["happened_at"] == happened_at
     assert row["payload"] == payload
 
-    # A top-level JSON array round-trips too -- MySQL has no array type, so
-    # unlike PostgreSQL a list is unambiguously a document here.
     qwp = dialect.update(table="docs", updates={"payload": [1, "a", None]}, where=None, returning=None)
     adapter.query_with_params(dialect, qwp)
     assert adapter.query("SELECT `payload` FROM `docs`").scalar() == [1, "a", None]
 
-    # TIMESTAMP columns come back as datetimes as well.
     adapter.exec("ALTER TABLE `docs` ADD COLUMN `seen` TIMESTAMP(6) NULL")
     adapter.query_with_params(
         dialect, QueryWithParams(query="UPDATE `docs` SET `seen` = ?", params=[happened_at])

@@ -13,8 +13,6 @@ class MySQLResult(ResultABC):
     def __init__(self, cursor: Any) -> None:
         self._cursor = cursor
         self._columns_cache: dict[str, str] | None = None
-        # Positional rather than keyed by name, so duplicate column names in a
-        # join still decode the right values.
         self._json_indexes: list[int] = []
 
     def columns(self) -> dict[str, str]:

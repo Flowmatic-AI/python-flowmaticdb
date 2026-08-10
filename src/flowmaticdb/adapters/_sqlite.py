@@ -35,9 +35,6 @@ def _convert_datetime(value: bytes) -> datetime | str:
     try:
         return datetime.fromisoformat(text)
     except ValueError:
-        # A DATETIME column can hold anything SQLite accepted -- an epoch
-        # number or a partial date written by another tool. Return it as text
-        # rather than failing the fetch.
         return text
 
 
@@ -106,9 +103,6 @@ class SQLiteAdapter(AdapterABC):
         db_name = self._database_name
         read_only = self._options.get("read_only", False)
 
-        # PARSE_DECLTYPES is what routes a column declared DATETIME or JSON
-        # through the converters registered above. Columns that are expressions
-        # rather than table columns have no declared type and stay untouched.
         if read_only:
             uri = f"file:{db_name}?mode=ro"
             self._connection = sqlite3.connect(

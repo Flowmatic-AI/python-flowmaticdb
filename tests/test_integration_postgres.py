@@ -806,7 +806,6 @@ def test_asyncpg_crud_and_column_types(asyncpg_db: DB) -> None:
         '"id" SERIAL PRIMARY KEY, "name" TEXT NOT NULL, "active" BOOLEAN, "seen" TIMESTAMP)'
     )
 
-    # `?` placeholders are renumbered to $1/$2/..., booleans and datetimes bind natively.
     seen = datetime(2026, 1, 2, 3, 4, 5)  # noqa: DTZ001 - the column is TIMESTAMP WITHOUT TIME ZONE
     adapter.query_with_params(
         dialect,
@@ -815,7 +814,6 @@ def test_asyncpg_crud_and_column_types(asyncpg_db: DB) -> None:
             params=["alice", True, seen],
         ),
     )
-    # `%s` placeholders are accepted too.
     adapter.query_with_params(
         dialect,
         QueryWithParams(
@@ -982,7 +980,6 @@ def test_postgres_datetime_and_json_columns(pg_adapter: PsycopgAdapter, pg_diale
     assert row["happened_at"] == aware
     assert row["payload"] == payload
 
-    # TIMESTAMP WITHOUT TIME ZONE keeps the naive value it was given.
     adapter.exec('ALTER TABLE "doc_t" ADD COLUMN "seen" TIMESTAMP')
     naive = datetime(2026, 1, 2, 3, 4, 5, 678901)  # noqa: DTZ001 - the column is naive
     adapter.query_with_params(
@@ -1012,7 +1009,6 @@ def test_postgres_bare_list_is_json_and_postgres_array_is_an_array(
         ),
     )
 
-    # Reads are unaffected: an array column still comes back as a plain list.
     row = adapter.query('SELECT "tags", "payload" FROM "arr_t"').fetch_dict()
     assert row is not None
     assert row["tags"] == ["a", "b"]
@@ -1102,7 +1098,6 @@ def test_asyncpg_datetime_and_json_columns(asyncpg_db: DB) -> None:
     assert row["payload"] == payload
     assert row["plain"] == [1, "a"]
     assert row["tags"] == ["a", "b"]
-    # Bound to TEXT the document is rendered rather than typed.
     assert row["rendered"] == '{"kind": "signup", "tags": ["a", "b"], "meta": {"ok": true, "n": 3}}'
 
     _drop(adapter, "asyncpg_doc")

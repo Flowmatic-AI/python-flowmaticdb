@@ -880,8 +880,6 @@ class SQLDialect(DialectABC):
         if isinstance(value, datetime):
             return self.escape_string(self.cast_datetime(value))
         if isinstance(value, PostgresArray):
-            # No array type here, so the array reading is dropped and the values
-            # are stored the only way this engine can hold them.
             return self.escape_string(self.cast_json(value.values))
         if isinstance(value, (dict, list)):
             return self.escape_string(self.cast_json(value))

@@ -46,23 +46,14 @@ def _placeholders_to_dollar_signs(query: str) -> str:
     return REGEX_PATTERN.sub(_replacer, query)
 
 
-# Placeholder types PostgreSQL resolves to a string.
 _TEXT_TYPE_OIDS = frozenset({18, 19, 25, 705, 1042, 1043})
 
-# Placeholder types the json/jsonb codecs registered in _open() encode.
 _JSON_TYPE_OIDS = frozenset({114, 3802})
 
 
 def _cast_param(dialect: DialectABC, value: Any) -> Any:
-    # asyncpg binds in the binary protocol against the type PostgreSQL declared for
-    # the placeholder, so it rejects the string the dialect's strftime cast would
-    # produce for a timestamp column. Temporal values are left native here and
-    # reconciled against the real placeholder type in _adapt_params().
     if isinstance(value, (datetime, date, time_of_day)):
         return value
-    # Documents and arrays are left native for the same reason: whether a dict or
-    # list has to be rendered depends on the placeholder type, which is only
-    # known once the statement is prepared.
     if isinstance(value, (dict, list, PostgresArray)):
         return value
     return dialect.cast_to_driver(value)
@@ -80,7 +71,6 @@ def _adapt_params(dialect: DialectABC, parameter_types: Sequence[Any], params: l
     adapted: list[Any] = []
     for index, value in enumerate(params):
         if index >= len(parameter_types):
-            # Let asyncpg report the arity mismatch rather than truncating it away.
             adapted.append(value)
             continue
         adapted.append(_adapt_param(dialect, parameter_types[index].oid, value))
@@ -89,17 +79,12 @@ def _adapt_params(dialect: DialectABC, parameter_types: Sequence[Any], params: l
 
 def _adapt_param(dialect: DialectABC, oid: int, value: Any) -> Any:
     if isinstance(value, PostgresArray):
-        # Explicitly an array: asyncpg binds a native list as one.
         return list(value.values)
 
     if isinstance(value, (datetime, date, time_of_day)):
         return dialect.cast_datetime(value) if oid in _TEXT_TYPE_OIDS else value
 
     if isinstance(value, (dict, list)):
-        # A document reaches the json/jsonb codecs untouched and is rendered
-        # anywhere else. That also means a bare list bound to an array column is
-        # handed over as JSON and rejected, rather than quietly becoming an
-        # array -- the same outcome as psycopg, which cannot tell them apart.
         return value if oid in _JSON_TYPE_OIDS else dialect.cast_json(value)
 
     return value
@@ -315,7 +300,6 @@ class AsyncpgAdapter(AdapterABC):
         ssl_crl = self._options.get("ssl_crl")
 
         if not ssl_cert and not ssl_key and not ssl_root_cert and not ssl_crl:
-            # asyncpg accepts the libpq sslmode names verbatim.
             return str(ssl_mode) if ssl_mode else None
 
         import ssl as ssl_module
@@ -329,9 +313,6 @@ class AsyncpgAdapter(AdapterABC):
             context.load_verify_locations(cafile=ssl_crl)
             context.verify_flags |= ssl_module.VERIFY_CRL_CHECK_CHAIN
 
-        # libpq semantics: only verify-ca/verify-full validate the server cert.
-        # With no explicit ssl_mode we verify fully, since supplying certificates
-        # signals intent to verify.
         if ssl_mode in ("disable", "allow", "prefer", "require"):
             context.check_hostname = False
             context.verify_mode = ssl_module.CERT_NONE
@@ -370,9 +351,6 @@ class AsyncpgAdapter(AdapterABC):
 
         connection: AsyncpgConnection = await asyncpg.connect(**connect_options)
 
-        # asyncpg hands json/jsonb over as raw text unless a codec says otherwise.
-        # These make dicts and lists bind to a json column and come back decoded,
-        # matching what psycopg does out of the box.
         for type_name in ("json", "jsonb"):
             await connection.set_type_codec(
                 type_name,

@@ -74,7 +74,6 @@ def test_postgres_array_falls_back_to_json_without_an_array_type(
     for dialect in (sql_dialect, sqlite_dialect, mysql_dialect):
         assert dialect.cast_to_driver(PostgresArray([1, 2])) == "[1, 2]"
 
-    # MySQL quotes string literals with `"`, the other two with `'`.
     assert sql_dialect.cast_to_query(PostgresArray([1, 2])) == "'[1, 2]'"
     assert sqlite_dialect.cast_to_query(PostgresArray([1, 2])) == "'[1, 2]'"
     assert mysql_dialect.cast_to_query(PostgresArray([1, 2])) == '"[1, 2]"'

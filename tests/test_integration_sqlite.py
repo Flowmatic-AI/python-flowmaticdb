@@ -281,8 +281,6 @@ def test_sqlite_datetime_and_json_column_types() -> None:
     assert '"payload" JSON' in qwp.query
     adapter.exec(qwp.query)
 
-    # An offset and microseconds survive: the sqlite3 adapter writes full
-    # ISO-8601, not the dialect's second-resolution SQL literal format.
     aware = datetime(2026, 8, 10, 12, 34, 56, 123456, tzinfo=timezone(timedelta(hours=2)))
     payload = {"kind": "signup", "tags": ["a", "b"], "meta": {"ok": True, "n": 3}}
 
@@ -302,7 +300,6 @@ def test_sqlite_datetime_and_json_column_types() -> None:
     assert row["payload"] == payload
     assert result.columns() == {"happened_at": "DATETIME", "payload": "JSON"}
 
-    # A top-level JSON array, and a naive datetime, round-trip too.
     naive = datetime(2026, 1, 2, 3, 4, 5)  # noqa: DTZ001 - naive on purpose
     qwp = dialect.update(
         table="events",
@@ -316,7 +313,6 @@ def test_sqlite_datetime_and_json_column_types() -> None:
     assert row["happened_at"] == naive
     assert row["payload"] == [1, "a", None]
 
-    # Columns declared DATE get a date back, and date params serialize.
     adapter.exec('CREATE TABLE "days" ("d" DATE)')
     adapter.query_with_params(
         dialect, QueryWithParams(query='INSERT INTO "days" ("d") VALUES (?)', params=[date(2026, 8, 10)])
@@ -341,7 +337,6 @@ def test_sqlite_declared_types_only_convert_table_columns() -> None:
     ).fetch_dict()
     assert row is not None
     assert isinstance(row["ts"], datetime)
-    # TEXT has no converter, so JSON-looking text stays text.
     assert row["note"] == '{"k": "v"}'
     assert row["n"] == 7
     assert row["c"] == 1

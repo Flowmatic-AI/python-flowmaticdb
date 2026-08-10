@@ -11,8 +11,6 @@ def _sqlite_runtime_type(value: Any) -> str:
         return "NULL"
     if isinstance(value, bool):
         return "INTEGER"
-    # Reported ahead of the primitives: the sqlite3 converters registered by
-    # SQLiteAdapter hand back these types for DATETIME/DATE/JSON columns.
     if isinstance(value, datetime):
         return "DATETIME"
     if isinstance(value, date):

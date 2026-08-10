@@ -8,9 +8,6 @@ from typing import Any
 
 
 def _encode_fallback(value: Any) -> Any:
-    """Render the values a database document commonly carries but ``json`` does
-    not know: temporals as ISO-8601, decimals as strings (a float would silently
-    lose precision)."""
     if isinstance(value, (datetime, date, time_of_day)):
         return value.isoformat()
     if isinstance(value, Decimal):
@@ -30,7 +27,4 @@ def decode_json(value: Any) -> Any:
     try:
         return json.loads(value)
     except json.JSONDecodeError:
-        # A JSON column can hold text written outside this library (or by a
-        # driver that already decoded it); hand it back rather than failing the
-        # whole fetch.
         return value

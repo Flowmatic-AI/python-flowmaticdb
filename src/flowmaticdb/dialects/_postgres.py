@@ -14,8 +14,6 @@ from flowmaticdb.query.expressions import PostgresArray
 
 _TZ_OFFSET_RE = re.compile(r"([+-]\d{2})$")
 
-# TIMESTAMP WITHOUT TIME ZONE columns and pre-timestamptz data still come back
-# without an offset; those are read as UTC.
 _NAIVE_DATETIME_FORMAT = "%Y-%m-%d %H:%M:%S.%f"
 
 
@@ -130,12 +128,6 @@ class PostgresqlDialect(SQLDialect):
         return super().cast_to_query(value)
 
     def cast_to_driver(self, value: Any) -> Any:
-        # PostgreSQL is the one supported engine with a real array type, and both
-        # drivers bind a Python list as one -- which is exactly why the array
-        # reading has to be asked for. A bare list stays a JSON document (base
-        # behaviour); only PostgresArray is unwrapped for the driver to bind as
-        # an array. Element types are left alone so the driver types them
-        # natively (a list of datetimes becomes timestamptz[], not text[]).
         if isinstance(value, PostgresArray):
             return list(value.values)
 
@@ -145,9 +137,6 @@ class PostgresqlDialect(SQLDialect):
         return value
 
     def cast_datetime(self, value: Any) -> str:
-        # %z renders nothing for a naive datetime, which would defeat the point
-        # of a timestamptz column -- read those as UTC, matching how naive
-        # strings are parsed back.
         if isinstance(value, datetime) and value.tzinfo is None:
             value = value.replace(tzinfo=UTC)
         return super().cast_datetime(value)
