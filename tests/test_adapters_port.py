@@ -7,6 +7,8 @@ lightweight fakes to pin down MySQL/Postgres-specific fixes.
 """
 from __future__ import annotations
 
+import sqlite3
+import threading
 from pathlib import Path
 from typing import Any
 
@@ -336,6 +338,45 @@ def test_sqlite_journal_mode_left_alone_by_default() -> None:
     assert row is not None
     assert row["journal_mode"] != "wal"
     adapter.close()
+
+
+def test_sqlite_connection_usable_from_another_thread_by_default() -> None:
+    adapter = SQLiteAdapter(database_name=":memory:")
+    results: list[Any] = []
+
+    def run() -> None:
+        try:
+            row = adapter.query("SELECT 1 AS one").fetch_dict()
+            results.append(row)
+        except Exception as e:  # noqa: BLE001 - the failure itself is the assertion
+            results.append(e)
+
+    thread = threading.Thread(target=run)
+    thread.start()
+    thread.join()
+
+    assert results == [{"one": 1}]
+    adapter.close()
+
+
+def test_sqlite_same_thread_check_can_be_re_enabled() -> None:
+    adapter = SQLiteAdapter(database_name=":memory:", options={"check_same_thread": True})
+    errors: list[Exception] = []
+
+    def run() -> None:
+        try:
+            adapter.query("SELECT 1")
+        except Exception as e:  # noqa: BLE001 - any driver error proves the check fired
+            errors.append(e)
+
+    thread = threading.Thread(target=run)
+    thread.start()
+    thread.join()
+
+    assert len(errors) == 1
+    assert isinstance(errors[0], sqlite3.ProgrammingError)
+    adapter.close()
+
 
 def test_sqlite_regexp_like_function_registered() -> None:
     adapter = SQLiteAdapter(database_name=":memory:")

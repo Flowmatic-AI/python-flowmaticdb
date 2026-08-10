@@ -96,6 +96,20 @@ db = DB.connect_sqlite("mydb.db", options={
 })
 ```
 
+Connections are opened with `sqlite3`'s same-thread check **disabled**, so a
+connection may be opened on one thread and used or closed on another — the
+pattern threaded web servers (e.g. FastAPI's `def` endpoints on its worker
+thread pool) fall into by default. Pass `options={"check_same_thread": True}` to
+restore `sqlite3`'s stock behaviour of raising
+`sqlite3.ProgrammingError` on cross-thread use.
+
+Dropping the check does not make one connection a substitute for a pool:
+statements from different threads interleave on the shared handle, so
+transactions, savepoints, and `last_insert_id()` are still connection-global.
+Give each thread (or request) its own `DB` when concurrent writes are in play,
+and consider `"journal_mode": "WAL"` plus a `"busy_timeout"` so the writers wait
+on each other instead of failing with `database is locked`.
+
 ### PostgreSQL
 
 ```python

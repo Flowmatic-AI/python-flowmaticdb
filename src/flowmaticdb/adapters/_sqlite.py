@@ -102,15 +102,23 @@ class SQLiteAdapter(AdapterABC):
 
         db_name = self._database_name
         read_only = self._options.get("read_only", False)
+        check_same_thread = self._options.get("check_same_thread", False)
 
         if read_only:
             uri = f"file:{db_name}?mode=ro"
             self._connection = sqlite3.connect(
-                uri, uri=True, isolation_level=None, detect_types=sqlite3.PARSE_DECLTYPES
+                uri,
+                uri=True,
+                isolation_level=None,
+                detect_types=sqlite3.PARSE_DECLTYPES,
+                check_same_thread=check_same_thread,
             )
         else:
             self._connection = sqlite3.connect(
-                db_name, isolation_level=None, detect_types=sqlite3.PARSE_DECLTYPES
+                db_name,
+                isolation_level=None,
+                detect_types=sqlite3.PARSE_DECLTYPES,
+                check_same_thread=check_same_thread,
             )
 
         self._connection.row_factory = sqlite3.Row
