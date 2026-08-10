@@ -2,18 +2,17 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any, Self
 
-from flowmaticdb.query._query import Query
+from flowmaticdb.query._query import SingleQuery
 from flowmaticdb.query._simple_mixins import ReturningMixin
 from flowmaticdb.query._where_mixin import WhereMixin
-from flowmaticdb.result import ResultABC
 
 if TYPE_CHECKING:
-    from flowmaticdb._query_with_params import QueryWithParams
+    from flowmaticdb import QueryWithParams
     from flowmaticdb.database import DatabaseABC
     from flowmaticdb.dialects import DialectABC
 
 
-class DeleteQuery(Query, WhereMixin, ReturningMixin):
+class DeleteQuery(SingleQuery, WhereMixin, ReturningMixin):
     def __init__(self, dialect: DialectABC, table: str | list[str], database: DatabaseABC) -> None:
         super().__init__(dialect, table, database)
 
@@ -30,7 +29,3 @@ class DeleteQuery(Query, WhereMixin, ReturningMixin):
             where=self.where,
             returning=self._returning_list,
         )
-
-    def execute(self, emulate_prepare: bool = False) -> ResultABC:
-        return self._database.query_with_params(self.to_query_with_params(), emulate_prepare)
-

@@ -3,7 +3,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
 
-from flowmaticdb._exceptions import QueryError
+from flowmaticdb import QueryError
 from flowmaticdb.result import Result, ResultABC
 
 if TYPE_CHECKING:

@@ -5,7 +5,7 @@ import time
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
 
-from flowmaticdb._exceptions import AdapterError
+from flowmaticdb import AdapterError
 from flowmaticdb._threading import ThreadLocalStore
 from flowmaticdb.adapters._base import AdapterABC
 from flowmaticdb.result import MySQLResult, ResultABC
@@ -14,7 +14,7 @@ if TYPE_CHECKING:
     from mysql.connector.abstracts import MySQLConnectionAbstract, MySQLCursorAbstract
     from mysql.connector.types import RowItemType, RowType
 
-    from flowmaticdb._query_with_params import QueryWithParams
+    from flowmaticdb import QueryWithParams
     from flowmaticdb.dialects import DialectABC
 
 
@@ -41,8 +41,12 @@ class MySQLAdapter(AdapterABC):
         self._port = port
         self._user = user
         self._password = password
-        self._connections: ThreadLocalStore[MySQLConnectionAbstract] = ThreadLocalStore()
-        self._cursors: ThreadLocalStore[MySQLCursorAbstract] = ThreadLocalStore()
+        self._connections: ThreadLocalStore[MySQLConnectionAbstract] = ThreadLocalStore(
+            on_thread_exit=self._close_connection,
+        )
+        self._cursors: ThreadLocalStore[MySQLCursorAbstract] = ThreadLocalStore(
+            on_thread_exit=self._close_cursor,
+        )
         self._connect()
 
     @property
@@ -56,12 +60,21 @@ class MySQLAdapter(AdapterABC):
         self._connect()
         return self._connections.require()
 
-    def _close_orphaned_connections(self) -> None:
+    def _close_connection(self, connection: MySQLConnectionAbstract) -> None:
         import mysql.connector
 
+        with contextlib.suppress(mysql.connector.Error):
+            connection.close()
+
+    def _close_cursor(self, cursor: MySQLCursorAbstract) -> None:
+        import mysql.connector
+
+        with contextlib.suppress(mysql.connector.Error):
+            cursor.close()
+
+    def _close_orphaned_connections(self) -> None:
         for connection in self._connections.take_orphaned():
-            with contextlib.suppress(mysql.connector.Error):
-                connection.close()
+            self._close_connection(connection)
 
     def connection_count(self) -> int:
         return self._connections.count()
@@ -238,12 +251,9 @@ class MySQLAdapter(AdapterABC):
         if self._options.get("persistent", False):
             return
 
-        import mysql.connector
-
         self._cursors.take_all()
 
         for connection in self._connections.take_all():
-            with contextlib.suppress(mysql.connector.Error):
-                connection.close()
+            self._close_connection(connection)
 
         self._closed = True

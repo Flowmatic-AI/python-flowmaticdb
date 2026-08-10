@@ -2,17 +2,16 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any, Self
 
-from flowmaticdb._query_with_params import QueryWithParams
 from flowmaticdb.query._ddl_mixins import IfExistsMixin
-from flowmaticdb.query._query import Query
-from flowmaticdb.result import ResultABC
+from flowmaticdb.query._query import SingleQuery
 
 if TYPE_CHECKING:
+    from flowmaticdb import QueryWithParams
     from flowmaticdb.database import DatabaseABC
     from flowmaticdb.dialects import DialectABC
 
 
-class DropTableQuery(Query, IfExistsMixin):
+class DropTableQuery(SingleQuery, IfExistsMixin):
     def __init__(self, dialect: DialectABC, table: str | list[str], database: DatabaseABC) -> None:
         super().__init__(dialect, table, database)
 
@@ -23,14 +22,10 @@ class DropTableQuery(Query, IfExistsMixin):
         return self
 
     def to_query_with_params(self) -> QueryWithParams:
-        if_exists = self._if_exists
         return self._dialect.drop_table(
-            if_exists=if_exists,
+            if_exists=self._if_exists,
             table=self._table,
         )
-
-    def execute(self, emulate_prepare: bool = False) -> ResultABC:
-        return self._database.query_with_params(self.to_query_with_params(), emulate_prepare)
 
     def explain(self, emulate_prepare: bool = False) -> list[dict[str, Any]]:
         return []

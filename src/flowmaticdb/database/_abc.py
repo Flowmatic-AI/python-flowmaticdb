@@ -9,7 +9,7 @@ from flowmaticdb.result import ResultABC
 T = TypeVar("T")
 
 if TYPE_CHECKING:
-    from flowmaticdb._query_with_params import QueryWithParams
+    from flowmaticdb import QueryWithParams
     from flowmaticdb.adapters import AdapterABC
     from flowmaticdb.database._table import Table
     from flowmaticdb.dialects import DialectABC

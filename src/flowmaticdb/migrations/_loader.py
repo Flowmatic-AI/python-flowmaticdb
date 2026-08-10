@@ -3,7 +3,7 @@ from __future__ import annotations
 import importlib.util
 import os
 
-from flowmaticdb._exceptions import DatabaseError
+from flowmaticdb import DatabaseError
 from flowmaticdb.migrations._migration_abc import MigrationABC
 
 

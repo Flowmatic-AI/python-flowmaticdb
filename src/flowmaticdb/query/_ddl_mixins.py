@@ -170,12 +170,12 @@ class ColumnsDefinitionMixin:
         return self.column(name, TypeEnum.DATETIME, not_null, default, bits=size)
 
     def current_timestamp(
-            self,
-            name: str,
-            size: int = 6,
-            not_null: bool = False,
-        ) -> Self:
-            return self.datetime(name, size, not_null, CurrentTimestamp())
+        self,
+        name: str,
+        size: int = 6,
+        not_null: bool = False,
+    ) -> Self:
+        return self.datetime(name, size, not_null, CurrentTimestamp())
 
     def json(self, name: str, not_null: bool = False, default: Any = None) -> Self:
         return self.column(name, TypeEnum.JSON, not_null, default)

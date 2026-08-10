@@ -24,7 +24,7 @@ if TYPE_CHECKING:
     from psycopg import Connection
     from psycopg.rows import TupleRow
 
-    from flowmaticdb._query_with_params import QueryWithParams
+    from flowmaticdb import QueryWithParams
     from flowmaticdb.dialects import DialectABC
 
 T = TypeVar("T")
@@ -114,7 +114,9 @@ class PsycopgAdapter(AdapterABC):
         self._port = port
         self._user = user
         self._password = password
-        self._connections: ThreadLocalStore[Connection[TupleRow]] = ThreadLocalStore()
+        self._connections: ThreadLocalStore[Connection[TupleRow]] = ThreadLocalStore(
+            on_thread_exit=self._close_connection,
+        )
         self._connect()
 
     @property
@@ -128,12 +130,15 @@ class PsycopgAdapter(AdapterABC):
         self._connect()
         return self._connections.require()
 
-    def _close_orphaned_connections(self) -> None:
+    def _close_connection(self, connection: Connection[TupleRow]) -> None:
         import psycopg
 
+        with contextlib.suppress(psycopg.Error):
+            connection.close()
+
+    def _close_orphaned_connections(self) -> None:
         for connection in self._connections.take_orphaned():
-            with contextlib.suppress(psycopg.Error):
-                connection.close()
+            self._close_connection(connection)
 
     def connection_count(self) -> int:
         return self._connections.count()
@@ -330,7 +335,9 @@ class AsyncpgAdapter(AdapterABC):
         self._loop: asyncio.AbstractEventLoop
         self._loop_thread: threading.Thread
         self._start_loop()
-        self._connections: ThreadLocalStore[AsyncpgConnection] = ThreadLocalStore()
+        self._connections: ThreadLocalStore[AsyncpgConnection] = ThreadLocalStore(
+            on_thread_exit=self._close_connection,
+        )
         self._connect()
 
     @property
@@ -344,10 +351,27 @@ class AsyncpgAdapter(AdapterABC):
         self._connect()
         return self._connections.require()
 
+    def _close_connection(self, connection: AsyncpgConnection) -> None:
+        """Hand the close to the loop thread without waiting on it.
+
+        An asyncpg connection belongs to the event loop, not to the thread that
+        ran queries through it, so the loop is the only place it can be shut
+        down. Waiting on the result would stall the caller for a network round
+        trip it gains nothing from -- and on the thread-exit path that caller is
+        a thread already in teardown, which must not be parked on a cross-thread
+        future that a wedged loop would never complete."""
+        coroutine = connection.close()
+        try:
+            asyncio.run_coroutine_threadsafe(coroutine, self._loop)
+        except RuntimeError:
+            # The loop is already gone, so the close can never be dispatched.
+            # Closing the coroutine keeps it from warning about never being
+            # awaited; the socket goes away with the loop.
+            coroutine.close()
+
     def _close_orphaned_connections(self) -> None:
         for connection in self._connections.take_orphaned():
-            with contextlib.suppress(Exception):
-                self._await(connection.close())
+            self._close_connection(connection)
 
     def connection_count(self) -> int:
         return self._connections.count()

@@ -3,7 +3,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Any, Self
 
-from flowmaticdb._exceptions import QueryError
+from flowmaticdb import QueryError
 from flowmaticdb._query_with_params import QueryWithParams
 from flowmaticdb.query._query import Query
 from flowmaticdb.query._simple_mixins import LastInsertIdMixin, OnConflictMixin, ReturningMixin, ValuesMixin
@@ -40,12 +40,18 @@ class InsertQuery(Query, ValuesMixin, OnConflictMixin, ReturningMixin, LastInser
             last_insert_id=self._last_insert_id_col,
         )
 
+    def to_sql(self) -> str:
+        return self.to_query_with_params().to_sql(self._dialect)
+
+    def explain(self, emulate_prepare: bool = False) -> list[dict[str, Any]]:
+        return self._explain(self.to_query_with_params(), emulate_prepare)
+
     def execute(self, emulate_prepare: bool = False) -> ResultABC | list[ResultABC]:
         if not self._on_conflict or (not self._emulate_on_conflict and self._dialect.on_conflict):
             if self._emulate_returning:
                 return self._insert(self._values_list, emulate_prepare)
 
-            return super().execute(emulate_prepare)
+            return self._run(self.to_query_with_params(), emulate_prepare)
 
         def _callback(_database: DatabaseABC) -> ResultABC | list[ResultABC]:
             results = [self._upsert(values, emulate_prepare) for values in self._values_list]

@@ -19,8 +19,7 @@ class SubQuery(SqlABC):
         return f"({qwp.query}) AS {dialect.escape_identifier(self._alias)}"
 
     def params(self, dialect: DialectABC) -> list[Any]:
-        qwp = self._query.to_query_with_params()
-        return list(qwp.params)
+        return self._query.to_query_with_params().params
 
     def raw_sql(self, dialect: DialectABC) -> str:
         qwp = self._query.to_query_with_params()

@@ -189,8 +189,7 @@ class MySQLDialect(SQLDialect):
         return f"MODIFY COLUMN {self.escape_identifier(alter.column)} {alter.sql}"
 
     def _build_alter_table_drop_constraint(self, alter: DropConstraint) -> str:
-        fragment = super()._build_alter_table_drop_constraint(alter)
-        return fragment[:5] + "INDEX" + fragment[15:]
+        return f"DROP INDEX {self.escape_identifier(alter.name)}"
 
     def type(self, type_enum: TypeEnum, bits: int | None = None) -> str:
         size = bits or 0

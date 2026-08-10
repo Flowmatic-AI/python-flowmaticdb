@@ -15,7 +15,7 @@ from flowmaticdb.adapters._base import AdapterABC
 from flowmaticdb.result import ResultABC, SQLite3Result
 
 if TYPE_CHECKING:
-    from flowmaticdb._query_with_params import QueryWithParams
+    from flowmaticdb import QueryWithParams
     from flowmaticdb.dialects import DialectABC
 
 _REGISTRY_LOCK = threading.Lock()
@@ -109,7 +109,10 @@ class SQLiteAdapter(AdapterABC):
             debug_callback=debug_callback,
         )
         shared = _is_memory_database(database_name)
-        self._connections: ThreadLocalStore[sqlite3.Connection] = ThreadLocalStore(shared_across_threads=shared)
+        self._connections: ThreadLocalStore[sqlite3.Connection] = ThreadLocalStore(
+            shared_across_threads=shared,
+            on_thread_exit=self._close_connection,
+        )
         self._statement_lock: AbstractContextManager[Any] = threading.RLock() if shared else nullcontext()
         self._connect()
 
@@ -124,10 +127,13 @@ class SQLiteAdapter(AdapterABC):
         self._connect()
         return self._connections.require()
 
+    def _close_connection(self, connection: sqlite3.Connection) -> None:
+        with contextlib.suppress(sqlite3.Error):
+            connection.close()
+
     def _close_orphaned_connections(self) -> None:
         for connection in self._connections.take_orphaned():
-            with contextlib.suppress(sqlite3.Error):
-                connection.close()
+            self._close_connection(connection)
 
     def connection_count(self) -> int:
         return self._connections.count()

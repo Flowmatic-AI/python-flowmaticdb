@@ -8,17 +8,16 @@ from flowmaticdb.query._ddl_mixins import (
     IfNotExistsMixin,
     PrimaryKeysMixin,
 )
-from flowmaticdb.query._query import Query
+from flowmaticdb.query._query import SingleQuery
 from flowmaticdb.query.ddl import Column, ConstraintABC
-from flowmaticdb.result import ResultABC
 
 if TYPE_CHECKING:
-    from flowmaticdb._query_with_params import QueryWithParams
+    from flowmaticdb import QueryWithParams
     from flowmaticdb.database import DatabaseABC
     from flowmaticdb.dialects import DialectABC
 
 
-class CreateTableQuery(Query, ColumnsDefinitionMixin, PrimaryKeysMixin, ConstraintsMixin, IfNotExistsMixin):
+class CreateTableQuery(SingleQuery, ColumnsDefinitionMixin, PrimaryKeysMixin, ConstraintsMixin, IfNotExistsMixin):
     def __init__(self, dialect: DialectABC, table: str | list[str], database: DatabaseABC) -> None:
         super().__init__(dialect, table, database)
 
@@ -35,9 +34,6 @@ class CreateTableQuery(Query, ColumnsDefinitionMixin, PrimaryKeysMixin, Constrai
             primary_keys=self._primary_keys if self._primary_keys else None,
             constraints=self._constraints if self._constraints else None,
         )
-
-    def execute(self, emulate_prepare: bool = False) -> ResultABC:
-        return self._database.query_with_params(self.to_query_with_params(), emulate_prepare)
 
     def explain(self, emulate_prepare: bool = False) -> list[dict[str, Any]]:
         return []

@@ -15,7 +15,7 @@ if TYPE_CHECKING:
 class Query(ABC):
     def __init__(self, dialect: DialectABC, table: str | list[str] | Alias | SubQuery, database: DatabaseABC) -> None:
         super().__init__()
-        
+
         self._dialect = dialect
         self._table = table
         self._database = database
@@ -28,42 +28,56 @@ class Query(ABC):
     def to_query_with_params(self) -> QueryWithParams | list[QueryWithParams]:
         ...
 
+    @abstractmethod
     def to_sql(self) -> str | list[str]:
-        qwp = self.to_query_with_params()
+        ...
 
-        if isinstance(qwp, list):
-            return [q.to_sql(self._dialect) for q in qwp]
-        
-        return qwp.to_sql(self._dialect)
-
+    @abstractmethod
     def execute(self, emulate_prepare: bool = False) -> ResultABC | list[ResultABC]:
-        qwp = self.to_query_with_params()
+        ...
 
-        if isinstance(qwp, list):
-            return [self._database.query_with_params(q, emulate_prepare) for q in qwp]
+    @abstractmethod
+    def explain(self, emulate_prepare: bool = False) -> list[dict[str, Any]]:
+        ...
 
+    def _explain(self, qwp: QueryWithParams, emulate_prepare: bool) -> list[dict[str, Any]]:
+        explain_qwp = QueryWithParams(query=f"EXPLAIN {qwp.query}", params=qwp.params)
+        return self._database.query_with_params(explain_qwp, emulate_prepare).fetch_dicts()
+
+    def _run(self, qwp: QueryWithParams, emulate_prepare: bool) -> ResultABC:
         return self._database.query_with_params(qwp, emulate_prepare)
 
+
+class SingleQuery(Query):
+    @abstractmethod
+    def to_query_with_params(self) -> QueryWithParams:
+        ...
+
+    def to_sql(self) -> str:
+        return self.to_query_with_params().to_sql(self._dialect)
+
+    def execute(self, emulate_prepare: bool = False) -> ResultABC:
+        return self._run(self.to_query_with_params(), emulate_prepare)
+
     def explain(self, emulate_prepare: bool = False) -> list[dict[str, Any]]:
-        qwp = self.to_query_with_params()
-        if isinstance(qwp, list):
-            results: list[dict[str, Any]] = []
+        return self._explain(self.to_query_with_params(), emulate_prepare)
 
-            for q in qwp:
-                explain_qwp = QueryWithParams(
-                    query=f"EXPLAIN {q.query}",
-                    params=list(q.params),
-                )
 
-                result = self._database.query_with_params(explain_qwp, emulate_prepare)
-                results.extend(result.fetch_dicts())
-            return results
-        
-        explain_qwp = QueryWithParams(
-            query=f"EXPLAIN {qwp.query}",
-            params=list(qwp.params),
-        )
+class MultiQuery(Query):
+    @abstractmethod
+    def to_query_with_params(self) -> list[QueryWithParams]:
+        ...
 
-        result = self._database.query_with_params(explain_qwp, emulate_prepare)
+    def to_sql(self) -> list[str]:
+        return [qwp.to_sql(self._dialect) for qwp in self.to_query_with_params()]
 
-        return result.fetch_dicts()
+    def execute(self, emulate_prepare: bool = False) -> list[ResultABC]:
+        return [self._run(qwp, emulate_prepare) for qwp in self.to_query_with_params()]
+
+    def explain(self, emulate_prepare: bool = False) -> list[dict[str, Any]]:
+        results: list[dict[str, Any]] = []
+
+        for qwp in self.to_query_with_params():
+            results.extend(self._explain(qwp, emulate_prepare))
+
+        return results

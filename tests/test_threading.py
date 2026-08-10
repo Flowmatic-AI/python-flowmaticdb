@@ -4,7 +4,8 @@ import sqlite3
 import threading
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
-from typing import Any
+from types import TracebackType
+from typing import Any, Self
 
 import pytest
 
@@ -15,6 +16,40 @@ from flowmaticdb.database import DB
 def _run_in_thread(callback: Any) -> Any:
     with ThreadPoolExecutor(max_workers=1) as pool:
         return pool.submit(callback).result()
+
+
+class _LiveWorker:
+    """A second thread that opens a connection and stays alive for the block.
+
+    Connections are reclaimed the instant their thread exits, so any assertion
+    about *two* threads holding connections has to be made while the second one
+    is still running."""
+
+    def __init__(self, db: DB) -> None:
+        self._db = db
+        self._ready = threading.Event()
+        self._release = threading.Event()
+        self._thread = threading.Thread(target=self._run, name="live-worker")
+        self.connection: Any = None
+
+    def _run(self) -> None:
+        self.connection = self._db.get_connection()
+        self._ready.set()
+        self._release.wait(timeout=10)
+
+    def __enter__(self) -> Self:
+        self._thread.start()
+        assert self._ready.wait(timeout=10)
+        return self
+
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc: BaseException | None,
+        traceback: TracebackType | None,
+    ) -> None:
+        self._release.set()
+        self._thread.join(timeout=10)
 
 
 def _file_db(tmp_path: Path, name: str = "threads.sqlite") -> DB:
@@ -28,10 +63,10 @@ def test_each_thread_gets_its_own_connection(tmp_path: Path) -> None:
     assert db.adapter.connection_count() == 1
 
     main_connection = db.get_connection()
-    other_connection = _run_in_thread(db.get_connection)
 
-    assert other_connection is not main_connection
-    assert db.adapter.connection_count() == 2
+    with _LiveWorker(db) as worker:
+        assert worker.connection is not main_connection
+        assert db.adapter.connection_count() == 2
 
     db.close()
 
@@ -39,11 +74,13 @@ def test_each_thread_gets_its_own_connection(tmp_path: Path) -> None:
 def test_a_thread_reuses_its_own_connection(tmp_path: Path) -> None:
     db = _file_db(tmp_path)
 
-    def _twice() -> bool:
-        return db.get_connection() is db.get_connection()
+    def _twice() -> tuple[bool, int]:
+        return db.get_connection() is db.get_connection(), db.adapter.connection_count()
 
-    assert _run_in_thread(_twice) is True
-    assert db.adapter.connection_count() == 2
+    reused, count_while_alive = _run_in_thread(_twice)
+
+    assert reused is True
+    assert count_while_alive == 2
 
     db.close()
 
@@ -111,13 +148,13 @@ def test_savepoint_stacks_are_per_thread(tmp_path: Path) -> None:
 def test_reconnect_leaves_other_threads_alone(tmp_path: Path) -> None:
     db = _file_db(tmp_path)
 
-    _run_in_thread(db.get_connection)
     main_connection = db.get_connection()
 
-    db.reconnect()
+    with _LiveWorker(db):
+        db.reconnect()
 
-    assert db.get_connection() is not main_connection
-    assert db.adapter.connection_count() == 2
+        assert db.get_connection() is not main_connection
+        assert db.adapter.connection_count() == 2
 
     db.close()
 
@@ -125,12 +162,14 @@ def test_reconnect_leaves_other_threads_alone(tmp_path: Path) -> None:
 def test_close_closes_every_threads_connection(tmp_path: Path) -> None:
     db = DB.connect_sqlite(str(tmp_path / "closed.sqlite"), options={"check_same_thread": False})
 
-    worker_connection = _run_in_thread(db.get_connection)
-    assert db.adapter.connection_count() == 2
+    with _LiveWorker(db) as worker:
+        worker_connection = worker.connection
+        assert db.adapter.connection_count() == 2
 
-    db.close()
+        db.close()
 
-    assert db.adapter.connection_count() == 0
+        assert db.adapter.connection_count() == 0
+
     with pytest.raises(sqlite3.ProgrammingError, match="closed database"):
         worker_connection.execute("SELECT 1")
 
@@ -156,14 +195,42 @@ def test_reconnect_revives_a_closed_adapter(tmp_path: Path) -> None:
     db.close()
 
 
-def test_finished_threads_connections_are_reclaimed(tmp_path: Path) -> None:
+def test_a_finished_threads_connection_is_closed_at_thread_exit(tmp_path: Path) -> None:
+    db = DB.connect_sqlite(str(tmp_path / "reclaimed.sqlite"), options={"check_same_thread": False})
+
+    worker_connection = _run_in_thread(db.get_connection)
+
+    # Reclaimed by the thread itself on the way out -- no later caller has to
+    # come along and notice, and nothing polls for it.
+    assert db.adapter.connection_count() == 1
+    with pytest.raises(sqlite3.ProgrammingError, match="closed database"):
+        worker_connection.execute("SELECT 1")
+
+    db.close()
+
+
+def test_thread_churn_does_not_accumulate_connections(tmp_path: Path) -> None:
     db = _file_db(tmp_path)
 
-    _run_in_thread(db.get_connection)
-    assert db.adapter.connection_count() == 2
+    for _ in range(25):
+        _run_in_thread(lambda: db.insert("t").values({"val": 1}).execute())
+        assert db.adapter.connection_count() == 1
 
-    _run_in_thread(db.get_connection)
-    assert db.adapter.connection_count() == 2
+    assert db.select("t").execute().fetch_dicts() != []
+
+    db.close()
+
+
+def test_thread_churn_does_not_accumulate_savepoint_stacks(tmp_path: Path) -> None:
+    db = _file_db(tmp_path)
+
+    assert db._savepoints == []
+
+    for _ in range(25):
+        _run_in_thread(lambda: db._savepoints)
+
+    # Only this thread's stack is left; the 25 finished ones went with them.
+    assert db._savepoint_stacks.count() == 1
 
     db.close()
 
@@ -171,11 +238,16 @@ def test_finished_threads_connections_are_reclaimed(tmp_path: Path) -> None:
 def test_persistent_close_keeps_every_threads_connection(tmp_path: Path) -> None:
     db = DB.connect_sqlite(str(tmp_path / "persistent.sqlite"), options={"persistent": True})
     db.exec("CREATE TABLE t (val INTEGER)")
-    _run_in_thread(db.get_connection)
 
-    db.close()
+    with _LiveWorker(db):
+        db.close()
 
-    assert db.adapter.connection_count() == 2
+        assert db.adapter.connection_count() == 2
+
+    # `persistent` spares the handles close() would otherwise drop, but a
+    # finished thread's connection is unreachable -- no thread can ever bind to
+    # it again -- so it is reclaimed regardless.
+    assert db.adapter.connection_count() == 1
     assert db.select("t").execute().fetch_dicts() == []
 
 

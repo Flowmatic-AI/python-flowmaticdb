@@ -21,5 +21,5 @@ class Expression(SqlABC):
 
     def raw_sql(self, dialect: DialectABC) -> str:
         from flowmaticdb._query_with_params import QueryWithParams
-        qwp = QueryWithParams(query=self._sql, params=list(self._params))
+        qwp = QueryWithParams(query=self._sql, params=self._params)
         return qwp.to_sql(dialect)

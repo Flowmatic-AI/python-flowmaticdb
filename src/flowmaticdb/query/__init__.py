@@ -9,7 +9,7 @@ from flowmaticdb.query._insert import InsertQuery
 from flowmaticdb.query._join import Join
 from flowmaticdb.query._on_conflict import OnConflict
 from flowmaticdb.query._order_by import OrderBy
-from flowmaticdb.query._query import Query
+from flowmaticdb.query._query import MultiQuery, Query, SingleQuery
 from flowmaticdb.query._select import SelectQuery
 from flowmaticdb.query._union import Union
 from flowmaticdb.query._update import UpdateQuery
@@ -25,10 +25,12 @@ __all__ = [
     "HavingGroup",
     "InsertQuery",
     "Join",
+    "MultiQuery",
     "OnConflict",
     "OrderBy",
     "Query",
     "SelectQuery",
+    "SingleQuery",
     "Union",
     "UpdateQuery",
     "WhereGroup",

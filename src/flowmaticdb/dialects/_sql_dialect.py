@@ -1,12 +1,12 @@
 from __future__ import annotations
 
-import sys
 import re
+import sys
 from collections.abc import Mapping
 from datetime import UTC, datetime
 from typing import Any, ClassVar
 
-from flowmaticdb._exceptions import QueryError
+from flowmaticdb import QueryError
 from flowmaticdb._json import decode_json, encode_json
 from flowmaticdb._query_with_params import QueryWithParams
 from flowmaticdb.dialects._base import DialectABC
@@ -750,11 +750,7 @@ class SQLDialect(DialectABC):
         if not alters:
             raise QueryError("ALTER TABLE requires at least one alter")
 
-        results = []
-        for alter in alters:
-            query = self._build_alter(table, alter)
-            results.append(query)
-        return results
+        return [self._build_alter(table, alter) for alter in alters]
 
     def _build_alter(self, table: Any, alter: AlterABC) -> QueryWithParams:
         table_str = self._table_name(table)

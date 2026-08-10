@@ -11,36 +11,54 @@ log()  { echo -e "${GREEN}[✓]${NC} $*"; }
 warn() { echo -e "${YELLOW}[!]${NC} $*"; }
 fail() { echo -e "${RED}[✗]${NC} $*" >&2; exit 1; }
 
+# Always operate from the project root, regardless of where we were invoked from
+cd "$(dirname "${BASH_SOURCE[0]}")"
+
 # ─── Check prerequisites ───
 command -v python3  >/dev/null 2>&1 || fail "python3 not found — install Python 3.11+"
-command -v pip      >/dev/null 2>&1 || fail "pip not found"
+python3 -m pip --version >/dev/null 2>&1 || fail "pip not available for $(command -v python3)"
 
 # ─── Load .env (PYPI_API_KEY) ───
 if [[ ! -f .env ]]; then
     fail ".env file not found — create it with PYPI_API_KEY=pypi-<your-token>"
 fi
 
-# Source only the key variable (safe subset)
-PYPI_API_KEY=$(grep '^PYPI_API_KEY=' .env | cut -d'=' -f2-)
+# Read only the key variable (safe subset), stripping quotes and any trailing CR
+PYPI_API_KEY=$(grep '^PYPI_API_KEY=' .env | head -1 | cut -d'=' -f2- | tr -d '\r' | sed -e 's/^["'\'']//' -e 's/["'\'']$//')
 
 if [[ -z "$PYPI_API_KEY" ]]; then
     fail "PYPI_API_KEY not set in .env"
 fi
 
-# ─── Install build tools if missing ───
-pip install --quiet build twine 2>/dev/null || pip install build twine
+# ─── Read the version we are about to publish ───
+VERSION=$(grep -E '^version *=' pyproject.toml | head -1 | cut -d'"' -f2)
+[[ -n "$VERSION" ]] || fail "Could not read version from pyproject.toml"
 
-log "Building package..."
+# ─── Install build tools if missing ───
+python3 -m pip install --quiet build twine
+
+# ─── Clean stale artifacts ───
+# dist/ accumulates every previous build; uploading those re-sends versions that
+# are already on PyPI, which fails the whole upload with "File already exists".
+log "Cleaning dist/ ..."
+rm -rf dist build src/*.egg-info
+
+log "Building package $VERSION ..."
 python3 -m build
 
+ARTIFACTS=("dist/flowmaticdb-$VERSION.tar.gz" "dist/flowmaticdb-$VERSION-py3-none-any.whl")
+for artifact in "${ARTIFACTS[@]}"; do
+    [[ -f "$artifact" ]] || fail "Expected build artifact not found: $artifact"
+done
+
 log "Checking package with twine..."
-twine check dist/*
+python3 -m twine check "${ARTIFACTS[@]}"
 
 # ─── Confirm before publishing ───
 echo ""
 warn "This will publish to PyPI (pypi.org)!"
 echo "  Package: flowmaticdb"
-grep '^version' pyproject.toml | tr -d ' '
+echo "  Version: $VERSION"
 echo ""
 read -rp "Continue? [y/N] " confirm
 if [[ "$confirm" != "y" && "$confirm" != "Y" ]]; then
@@ -50,7 +68,7 @@ fi
 
 # ─── Publish ───
 log "Uploading to PyPI..."
-twine upload dist/* \
+python3 -m twine upload "${ARTIFACTS[@]}" \
     --username __token__ \
     --password "$PYPI_API_KEY"
 

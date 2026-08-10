@@ -8,7 +8,7 @@ from flowmaticdb.query._condition import Condition
 from flowmaticdb.query._condition_group import ConditionGroupABC
 from flowmaticdb.query._condition_mixin import ConditionMixin
 from flowmaticdb.query.enums import ChainEnum, JoinEnum
-from flowmaticdb.query.expressions import SqlABC, Identifier
+from flowmaticdb.query.expressions import Identifier, SqlABC
 
 if TYPE_CHECKING:
     from flowmaticdb.query._select import SelectQuery

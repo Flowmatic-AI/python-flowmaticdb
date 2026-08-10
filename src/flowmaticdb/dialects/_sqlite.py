@@ -4,7 +4,7 @@ import dataclasses
 import re
 from typing import Any
 
-from flowmaticdb._exceptions import QueryError
+from flowmaticdb import QueryError
 from flowmaticdb._query_with_params import QueryWithParams
 from flowmaticdb.dialects._sql_dialect import SQLDialect
 from flowmaticdb.query import Condition, OnConflict

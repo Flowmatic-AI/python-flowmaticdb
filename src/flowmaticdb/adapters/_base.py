@@ -5,11 +5,11 @@ from abc import ABC, abstractmethod
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
 
-from flowmaticdb._exceptions import AdapterError
+from flowmaticdb import AdapterError
 from flowmaticdb.result import ResultABC
 
 if TYPE_CHECKING:
-    from flowmaticdb._query_with_params import QueryWithParams
+    from flowmaticdb import QueryWithParams
     from flowmaticdb.dialects import DialectABC
 
 

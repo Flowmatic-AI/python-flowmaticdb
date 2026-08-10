@@ -1132,7 +1132,10 @@ def _threaded_workload(db: DB, table: str) -> None:
 
     rows = db.select(table).execute().fetch_dicts()
     assert sorted(row["val"] for row in rows) == list(range(40))
-    assert db.adapter.connection_count() == len(idents) + 1
+    # The pool has shut down, so every worker connection was closed as its
+    # thread exited; only this thread's own connection is left.
+    assert len(idents) > 1
+    assert db.adapter.connection_count() == 1
 
     opened = threading.Event()
     release = threading.Event()

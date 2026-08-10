@@ -13,7 +13,7 @@ pip install -r requirements.txt
 
 | Command | Purpose |
 |---------|---------|
-| `python3 -m pytest` | Run all tests (unit + SQLite integration; 414 collected without a server, 2 pre-existing failures in `test_database_port.py`) |
+| `python3 -m pytest` | Run all tests (unit + SQLite integration; 464 collected and passing without a server) |
 | `python3 -m pytest tests/test_integration_sqlite.py` | SQLite integration tests |
 | `python3 -m pytest tests/test_integration_postgres.py` | PostgreSQL integration tests (skips when PG not reachable on localhost:5432; run `docker compose up -d postgres`) |
 | `python3 -m pytest tests/test_integration_mysql.py` | MySQL integration tests (skips when MySQL not reachable on localhost:3306; run `docker start sentience-v3-mysql-1` or any `mysql` container with `MYSQL_ALLOW_EMPTY_PASSWORD=yes` on port 3306 — the suite auto-creates the `flowmaticdb` database) |
@@ -47,7 +47,7 @@ Within each package, modules named with a leading underscore (e.g. `flowmaticdb.
 
 ## Import gotchas
 
-- Always import from the package, never a `_`-prefixed module inside it: `from flowmaticdb.adapters import PsycopgAdapter`, not `from flowmaticdb.adapters._postgres import PsycopgAdapter`.
+- Always import from the package, never a `_`-prefixed module inside it: `from flowmaticdb.adapters import PsycopgAdapter`, not `from flowmaticdb.adapters._postgres import PsycopgAdapter`. Inside `src/flowmaticdb` three carve-outs are forced by the import graph — see **Leading underscore = private** under Key conventions before "fixing" a `_module` import there.
 - `PsycopgAdapter` is exported from `flowmaticdb.adapters` — `from flowmaticdb.adapters import PsycopgAdapter`.
 - `PsycopgResult` is exported from `flowmaticdb.result` — `from flowmaticdb.result import PsycopgResult`.
 - `raw()`, `identifier()`, `alias()`, `expression()`, `sub_query()`, `current_timestamp()`, `now()` — module-level functions exported from the top-level package: `from flowmaticdb import raw`.
@@ -57,7 +57,10 @@ Within each package, modules named with a leading underscore (e.g. `flowmaticdb.
 
 ## Key conventions
 
-- **Leading underscore = private** — a `_`-prefixed module name marks an implementation detail. A package's public API is exactly its `__init__.py` `__all__`; import from the package, never from a module inside it. This holds without exception, including `_exceptions.py` and `_helpers.py`.
+- **Leading underscore = private** — a `_`-prefixed module name marks an implementation detail. A package's public API is exactly its `__init__.py` `__all__`; import from the package, never from a module inside it. This binds **consumers of a package**, which includes sibling packages inside `flowmaticdb` itself — `adapters/_mysql.py` reaches `AdapterError` as `from flowmaticdb import AdapterError`, not `from flowmaticdb._exceptions import …`. Three carve-outs, all forced by the import graph rather than by preference:
+  - **A module cannot route through its own package's `__init__`.** `query/_select.py` importing `from flowmaticdb.query import Condition` is a cycle — `query/__init__.py` is what imports `_select` in the first place. Same-package siblings therefore stay on the `_module` path (~164 of these).
+  - **`QueryWithParams` at runtime.** `flowmaticdb/__init__.py` reaches `flowmaticdb.query` through `_helpers` on line 2, well before it binds `QueryWithParams`, so a runtime `from flowmaticdb import QueryWithParams` inside `query/` raises `ImportError`. Reordering `__init__.py` to dodge that would make correctness depend on statement order, which ruff's isort rule (`I001`) actively re-sorts. Runtime uses import `flowmaticdb._query_with_params`; **`if TYPE_CHECKING:` uses go through the package**, since they never execute. The exceptions have no such problem — `_exceptions` is a dependency-free leaf bound on line 1.
+  - **Genuinely private cross-package helpers.** `ThreadLocalStore`, `encode_json`/`decode_json` and `REGEX_PATTERN` are internal and deliberately absent from `__all__`; exporting them to satisfy the rule would widen the library's public API. These 12 imports keep the `_module` path.
 - **ABCs over Protocols** — nominal subtyping (`abc.ABC`) used everywhere.
 - **Mixins over traits** — multiple inheritance with `WhereMixin`, `HavingMixin`, etc.
 - **Fluent API returns `Self`** — all query builder methods return `Self` for chaining.
@@ -72,6 +75,10 @@ Within each package, modules named with a leading underscore (e.g. `flowmaticdb.
 A `DB`/adapter is shared between threads; a **connection is not**.
 
 - `flowmaticdb/_threading.py` (private) holds `ThreadLocalStore[T]` — one value per thread, keyed by the `threading.Thread` object (not `ident`, which is recycled), with `current()`/`require()`/`set()`/`discard()`/`values()`/`take_all()`/`take_orphaned()`/`count()`.
+- **Values are released the moment their thread exits.** `set()` arms a `_ThreadExitHook` parked in a `threading.local`; CPython drops the last reference to it while tearing the thread's state down, so its `__del__` runs *in the dying thread*, while it can still do IO. The hook evicts the entry and hands the value to the store's `on_thread_exit` callback — which is how each adapter closes that thread's connection. Nothing polls, and no later caller has to come along and notice. The hook captures its `Thread` key up front: by the time `__del__` runs the thread is out of `threading._active`, so `current_thread()` would return a fresh dummy. `discard()` cancels the hook; a `shared_across_threads` store never arms one, since its single value outlives every individual thread.
+- `take_orphaned()` is now only a backstop for what the hook cannot reach (a thread killed without teardown). `_close_orphaned_connections()` still runs on the new-thread path.
+- This matters most under a **FastAPI sync (`def`) endpoint**, which runs on AnyIO's worker pool: those workers are retired once idle for 10s (`MAX_IDLE_TIME`), lazily, on the next `to_thread.run_sync`. Measured against live MySQL, a burst of 20 requests opens 21 connections and falls back to 2 as the pool retires — server-side `information_schema.processlist` drops in lockstep. Before the hook, all 21 stayed open until `wait_timeout` (8h) or process exit. `async def` endpoints run on the loop thread and hold a single connection for the process.
+- `persistent` spares the handles `close()` would drop; it does **not** keep a finished thread's connection alive, which is unreachable by construction — no thread can ever bind to it again.
 - Every adapter keeps `self._connections: ThreadLocalStore[<driver connection>]` and exposes `_connection` as a **property**: returns the calling thread's handle, else prunes finished threads' handles and calls `_connect()`. `_connect()` binds the handle to the store *before* running the startup queries, since those go back through `exec()`.
 - `AdapterABC._closed` + `_ensure_not_closed()` stop a post-`close()` query from silently opening a fresh connection; `_connect()` clears the flag, so `reconnect()` revives a closed adapter. `close()` skips the flag on the `persistent` path (it deliberately leaves handles open).
 - `AdapterABC.connection_count()` is concrete (`1 if is_connected() else 0`) and overridden per adapter with `self._connections.count()` — deliberately not abstract, so existing `AdapterABC` subclasses keep working.
@@ -92,7 +99,7 @@ A `DB`/adapter is shared between threads; a **connection is not**.
 
 ## Testing
 
-- **Testing**: 412 tests pass without any database (unit + SQLite in-memory/file integration, including `test_threading.py`). 2 pre-existing failures in `test_database_port.py`.
+- **Testing**: 464 tests pass without any database (unit + SQLite in-memory/file integration, including `test_threading.py`).
 - **Unit tests** (no database): `test_dialect_*.py`, `test_*_query.py`, `test_conditions.py`, `test_joins.py`, `test_expressions.py`, `test_query_with_params.py`, `test_result_abstract.py`, `test_json_and_datetime_types.py`.
 - **Integration tests**: `test_integration_sqlite.py` uses SQLite `:memory:` — no external services needed. `test_integration_postgres.py` requires a PostgreSQL service on `localhost:5432` (skipped via `pytestmark` when unreachable; run `docker compose up -d postgres`). `test_integration_mysql.py` requires a MySQL service on `localhost:3306` with `MYSQL_ALLOW_EMPTY_PASSWORD=yes` (skipped via a session-scoped fixture when unreachable; the suite auto-creates the `flowmaticdb` database and drops all user tables between tests).
 - **Fixtures**: `conftest.py` provides `sql_dialect`, `sqlite_dialect`, `pg_dialect`, `mysql_dialect`. The postgres integration module defines its own `pg_adapter` / `pg_dialect` / `pg_db` yield fixtures. The mysql integration module defines `mysql_adapter` / `mysql_dialect` (the latter overrides the conftest one within that module) plus a session-scoped `_flowmaticdb_database` bootstrap fixture.
