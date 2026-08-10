@@ -128,6 +128,36 @@ db = DB.connect_mysql(
 )
 ```
 
+### Reconnecting
+
+A long-lived `DB` outlives its connection: servers close idle sessions, restart,
+or drop the socket. Three methods cover that:
+
+```python
+db.is_connected()               # is the connection still usable?
+db.reconnect_if_disconnected()  # reconnect only if it is not; returns whether it did
+db.reconnect()                  # unconditionally drop and reopen
+```
+
+A reconnect opens a completely fresh connection: the `startup_queries` and
+`options` given at connect time are reapplied, and any open transaction is gone
+(the savepoint bookkeeping is reset to match).
+
+```python
+def handle_request(db):
+    db.reconnect_if_disconnected()
+    return db.select("users").execute().fetch_dicts()
+```
+
+`is_connected()` pings the server on PostgreSQL (psycopg) and MySQL, so an idle
+connection whose backend died is detected before the next query rather than
+after it fails. Two caveats:
+
+- Reconnecting a SQLite `:memory:` database opens an **empty** one — the old
+  database only ever existed inside the dropped handle.
+- Inside an open transaction the PostgreSQL check falls back to the local
+  connection status (no ping), so a transaction is never disturbed by it.
+
 ### Debug Callback
 
 All connection methods accept a `debug_callback` for query logging:

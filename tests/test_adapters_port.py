@@ -13,7 +13,7 @@ from typing import Any
 import pytest
 
 from flowmaticdb.adapters import AdapterABC, SQLiteAdapter
-from flowmaticdb.database import DatabaseABC
+from flowmaticdb.database import Database, DatabaseABC
 from flowmaticdb.dialects import MySQLDialect, PostgresqlDialect, SQLiteDialect
 from flowmaticdb.result import Result, ResultABC
 
@@ -212,7 +212,19 @@ class _RecordingAdapter(AdapterABC):
     def __init__(self) -> None:
         super().__init__(driver_name="fake", database_name="fake")
         self._in_transaction = False
+        self._connected = True
         self.statements: list[str] = []
+        self.connects = 0
+
+    def _connect(self) -> None:
+        self._connected = True
+        self.connects += 1
+
+    def _disconnect(self) -> None:
+        self._connected = False
+
+    def is_connected(self) -> bool:
+        return self._connected
 
     def version(self) -> str:
         return "0"
@@ -242,8 +254,11 @@ class _RecordingAdapter(AdapterABC):
     def last_insert_id(self, name: str | None = None) -> int | str | None:
         return None
 
+    def get_connection(self) -> Any:
+        return None
+
     def close(self) -> None:
-        pass
+        self._disconnect()
 
 
 def test_database_sends_sqlite_dialect_sql_to_adapter_for_transactions_and_savepoints() -> None:
@@ -507,3 +522,83 @@ def test_psycopg_begin_transaction_emits_dialect_sql() -> None:
     assert connection.autocommit is True
     assert connection.statements == ["BEGIN TRANSACTION", "COMMIT TRANSACTION"]
     assert adapter.in_transaction is False
+
+
+def test_sqlite_adapter_reports_connection_state() -> None:
+    adapter = SQLiteAdapter(database_name=":memory:")
+    assert adapter.is_connected() is True
+
+    adapter.close()
+    assert adapter.is_connected() is False
+
+
+def test_sqlite_adapter_reconnect_opens_a_fresh_connection(tmp_path: Path) -> None:
+    db_path = str(tmp_path / "reconnect.sqlite")
+    adapter = SQLiteAdapter(database_name=db_path)
+    adapter.exec("CREATE TABLE t (val INTEGER)")
+    adapter.exec("INSERT INTO t (val) VALUES (1)")
+    adapter.close()
+    assert adapter.is_connected() is False
+
+    adapter.reconnect()
+
+    assert adapter.is_connected() is True
+    rows = adapter.query("SELECT val FROM t").fetch_dicts()
+    assert [row["val"] for row in rows] == [1]
+    adapter.close()
+
+
+def test_sqlite_adapter_reconnect_reapplies_startup_queries(tmp_path: Path) -> None:
+    db_path = str(tmp_path / "startup.sqlite")
+    adapter = SQLiteAdapter(
+        database_name=db_path,
+        startup_queries=["CREATE TABLE IF NOT EXISTS startup (id INTEGER)"],
+        options={"foreign_keys": True},
+    )
+    adapter.close()
+
+    adapter.reconnect()
+
+    assert adapter.query("PRAGMA foreign_keys").scalar() == 1
+    adapter.query("SELECT id FROM startup")
+    adapter.close()
+
+
+def test_database_reconnect_if_disconnected_is_a_noop_while_connected(tmp_path: Path) -> None:
+    db = Database.connect_sqlite(str(tmp_path / "live.sqlite"))
+    db.exec("CREATE TABLE t (val INTEGER)")
+
+    assert db.is_connected() is True
+    assert db.reconnect_if_disconnected() is False
+
+    # Same connection, so the table created before the call is still there.
+    db.query("SELECT val FROM t")
+    db.close()
+
+
+def test_database_reconnect_if_disconnected_restores_a_dropped_connection(tmp_path: Path) -> None:
+    db = Database.connect_sqlite(str(tmp_path / "dropped.sqlite"))
+    db.exec("CREATE TABLE t (val INTEGER)")
+    db.insert("t").values({"val": 7}).execute()
+    db.close()
+
+    assert db.reconnect_if_disconnected() is True
+
+    assert db.is_connected() is True
+    assert db.select("t").execute().scalar() == 7
+    db.close()
+
+
+def test_database_reconnect_clears_savepoint_bookkeeping() -> None:
+    adapter = _RecordingAdapter()
+    db = Database(adapter, SQLiteDialect())
+
+    db.begin_transaction()
+    db.begin_transaction("sp1")
+    assert db._savepoints == ["sp1"]
+
+    adapter.close()
+    assert db.reconnect_if_disconnected() is True
+
+    assert db._savepoints == []
+    assert adapter.connects == 1

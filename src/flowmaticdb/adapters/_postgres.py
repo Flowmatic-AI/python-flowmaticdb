@@ -154,6 +154,37 @@ class PsycopgAdapter(AdapterABC):
 
         self._exec_startup_queries()
 
+    def _disconnect(self) -> None:
+        self._connection.close()
+
+    def is_connected(self) -> bool:
+        import psycopg
+        from psycopg.pq import TransactionStatus
+
+        if self._connection.closed:
+            return False
+
+        status = self._connection.info.transaction_status
+
+        # UNKNOWN is how libpq reports a connection it can no longer use.
+        if status == TransactionStatus.UNKNOWN:
+            return False
+
+        # Inside a transaction the local status is the only usable answer: a
+        # ping would be an extra statement in it, and in a failed transaction
+        # (INERROR) it would fail without the connection being dead.
+        if status != TransactionStatus.IDLE:
+            return True
+
+        # libpq only learns about a backend that died while idle on the next
+        # round trip, so an idle connection is pinged (as mysql.connector's own
+        # is_connected() does) rather than trusted.
+        try:
+            self._connection.execute(b"SELECT 1")
+        except psycopg.Error:
+            return False
+        return True
+
     def version(self) -> str:
         import psycopg
 
@@ -245,7 +276,7 @@ class PsycopgAdapter(AdapterABC):
         return self._connection
 
     def close(self) -> None:
-        self._connection.close()
+        self._disconnect()
 
 
 class AsyncpgAdapter(AdapterABC):
@@ -279,11 +310,16 @@ class AsyncpgAdapter(AdapterABC):
         self._port = port
         self._user = user
         self._password = password
+        self._loop: asyncio.AbstractEventLoop
+        self._loop_thread: threading.Thread
+        self._start_loop()
+        self._connection: AsyncpgConnection
+        self._connect()
+
+    def _start_loop(self) -> None:
         self._loop = asyncio.new_event_loop()
         self._loop_thread = threading.Thread(target=self._run_loop, name="flowmaticdb-asyncpg", daemon=True)
         self._loop_thread.start()
-        self._connection: AsyncpgConnection
-        self._connect()
 
     def _run_loop(self) -> None:
         asyncio.set_event_loop(self._loop)
@@ -361,6 +397,23 @@ class AsyncpgAdapter(AdapterABC):
             )
 
         return connection
+
+    def _disconnect(self) -> None:
+        if self._loop.is_closed():
+            return
+        self._await(self._connection.close())
+
+    def is_connected(self) -> bool:
+        if self._loop.is_closed():
+            return False
+        return not bool(self._connection.is_closed())
+
+    def reconnect(self) -> None:
+        # close() tears the loop down as well, so a reconnect after it has to
+        # bring a new loop thread up before any coroutine can be awaited.
+        if self._loop.is_closed():
+            self._start_loop()
+        super().reconnect()
 
     async def _fetch(self, query: str) -> AsyncpgResult:
         statement = await self._connection.prepare(query)
@@ -455,7 +508,7 @@ class AsyncpgAdapter(AdapterABC):
         if self._loop.is_closed():
             return
         try:
-            self._await(self._connection.close())
+            self._disconnect()
         finally:
             self._loop.call_soon_threadsafe(self._loop.stop)
             self._loop_thread.join()

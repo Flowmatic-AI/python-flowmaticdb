@@ -143,6 +143,18 @@ class SQLiteAdapter(AdapterABC):
 
         self._exec_startup_queries()
 
+    def _disconnect(self) -> None:
+        self._connection.close()
+
+    def is_connected(self) -> bool:
+        try:
+            # Cheapest attribute that still goes through sqlite3's
+            # closed-connection check; raises ProgrammingError once closed.
+            _ = self._connection.total_changes
+        except sqlite3.Error:
+            return False
+        return True
+
     def version(self) -> str:
         try:
             cursor = self._connection.execute("SELECT sqlite_version()")
@@ -222,7 +234,7 @@ class SQLiteAdapter(AdapterABC):
                 pass
 
         if not self._options.get("persistent", False):
-            self._connection.close()
+            self._disconnect()
 
 
 def _regexp_fn(pattern: str, value: str) -> int:

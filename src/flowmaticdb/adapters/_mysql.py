@@ -47,6 +47,9 @@ class MySQLAdapter(AdapterABC):
         import mysql.connector
         from mysql.connector.pooling import PooledMySQLConnection
 
+        # A cursor from a previous connection cannot be drained on the new one.
+        self._current_cursor = None
+
         connect_options: dict[str, Any] = {
             "host": self._host,
             "port": self._port,
@@ -83,6 +86,12 @@ class MySQLAdapter(AdapterABC):
             self.exec(f"SET SESSION default_storage_engine = {self._options['engine']}")
 
         self._exec_startup_queries()
+
+    def _disconnect(self) -> None:
+        self._connection.close()
+
+    def is_connected(self) -> bool:
+        return bool(self._connection.is_connected())
 
     def _drain_cursor(self) -> None:
         if self._current_cursor is not None:
@@ -197,4 +206,4 @@ class MySQLAdapter(AdapterABC):
 
     def close(self) -> None:
         if not self._options.get("persistent", False):
-            self._connection.close()
+            self._disconnect()

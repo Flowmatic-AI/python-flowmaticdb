@@ -13,7 +13,7 @@ pip install -r requirements.txt
 
 | Command | Purpose |
 |---------|---------|
-| `python3 -m pytest` | Run all tests (unit + SQLite integration; 390 collected, 5 pre-existing failures) |
+| `python3 -m pytest` | Run all tests (unit + SQLite integration; 398 collected, 2 pre-existing failures in `test_database_port.py`) |
 | `python3 -m pytest tests/test_integration_sqlite.py` | SQLite integration tests |
 | `python3 -m pytest tests/test_integration_postgres.py` | PostgreSQL integration tests (skips when PG not reachable on localhost:5432; run `docker compose up -d postgres`) |
 | `python3 -m pytest tests/test_integration_mysql.py` | MySQL integration tests (skips when MySQL not reachable on localhost:3306; run `docker start sentience-v3-mysql-1` or any `mysql` container with `MYSQL_ALLOW_EMPTY_PASSWORD=yes` on port 3306 — the suite auto-creates the `flowmaticdb` database) |
@@ -29,7 +29,7 @@ No Makefile, CI workflows, or pre-commit hooks exist.
 Five pillars under `src/flowmaticdb/`:
 
 - **`dialects/`** — SQL generation (`SQLDialect` base, `PostgresqlDialect`, `SQLiteDialect`). `SQLDialect` is the largest file (~713 lines).
-- **`adapters/`** — Connection wrappers (`SQLiteAdapter`, `PsycopgAdapter`, `AsyncpgAdapter`, `MySQLAdapter`).
+- **`adapters/`** — Connection wrappers (`SQLiteAdapter`, `PsycopgAdapter`, `AsyncpgAdapter`, `MySQLAdapter`). Connection lifecycle is four methods: `_connect()` opens, `_disconnect()` unconditionally drops the driver handle, `close()` is the public teardown that honours the `persistent`/`optimize` options, and `is_connected()` reports liveness. `reconnect()` is concrete on `AdapterABC` (`_disconnect()`, errors suppressed, then `_connect()`); `AsyncpgAdapter` overrides it to restart its loop thread first, since its `close()` tears the loop down too.
 - **`query/`** — Fluent query builders (`SelectQuery`, `InsertQuery`, `UpdateQuery`, `DeleteQuery`, `CreateTableQuery`, `AlterTableQuery`, `DropTableQuery`). Mixins: `WhereMixin`, `HavingMixin`, `JoinsMixin`, etc.
 - **`result/`** — Result set abstraction (`Result`, `SQLite3Result`, `PsycopgResult`, `AsyncpgResult`, `MySQLResult`). Methods: `fetch_dict()`, `fetch_dicts()`, `scalar()`, `fetch_object()`, `fetch_objects()`, `columns()`.
 - **`migrations/`** — Schema migrations. Subclass `MigrationABC` (`up(db)`/`down(db)` abstract — the `DB` is passed in, not stored on the instance; `in_transaction()` returns `True` by default). `Migrator(db, migrations_dir, migrations_table="migrations")` drives them: `init()`, `up()`, `down()`, `create(name)`.
@@ -77,7 +77,7 @@ Within each package, modules named with a leading underscore (e.g. `flowmaticdb.
 
 ## Testing
 
-- **Testing**: 385 tests pass without any database (unit + SQLite in-memory integration). 5 pre-existing failures in `test_adapters_port.py` / `test_database_port.py`.
+- **Testing**: 396 tests pass without any database (unit + SQLite in-memory integration). 2 pre-existing failures in `test_database_port.py`.
 - **Unit tests** (no database): `test_dialect_*.py`, `test_*_query.py`, `test_conditions.py`, `test_joins.py`, `test_expressions.py`, `test_query_with_params.py`, `test_result_abstract.py`, `test_json_and_datetime_types.py`.
 - **Integration tests**: `test_integration_sqlite.py` uses SQLite `:memory:` — no external services needed. `test_integration_postgres.py` requires a PostgreSQL service on `localhost:5432` (skipped via `pytestmark` when unreachable; run `docker compose up -d postgres`). `test_integration_mysql.py` requires a MySQL service on `localhost:3306` with `MYSQL_ALLOW_EMPTY_PASSWORD=yes` (skipped via a session-scoped fixture when unreachable; the suite auto-creates the `flowmaticdb` database and drops all user tables between tests).
 - **Fixtures**: `conftest.py` provides `sql_dialect`, `sqlite_dialect`, `pg_dialect`, `mysql_dialect`. The postgres integration module defines its own `pg_adapter` / `pg_dialect` / `pg_db` yield fixtures. The mysql integration module defines `mysql_adapter` / `mysql_dialect` (the latter overrides the conftest one within that module) plus a session-scoped `_flowmaticdb_database` bootstrap fixture.

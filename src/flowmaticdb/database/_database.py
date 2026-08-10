@@ -148,5 +148,27 @@ class Database(DatabaseABC):
     def close(self) -> None:
         self.adapter.close()
 
+    def is_connected(self) -> bool:
+        return self.adapter.is_connected()
+
+    def reconnect(self) -> None:
+        """Drop the current connection and open a fresh one.
+
+        Any open transaction dies with the old connection, so the savepoint
+        bookkeeping is reset here as well."""
+        self._savepoints = []
+        self.adapter.reconnect()
+
+    def reconnect_if_disconnected(self) -> bool:
+        """Reconnect when the connection has dropped. Returns whether it did.
+
+        Note for SQLite ``:memory:`` databases: a reconnect opens an *empty*
+        database, since the old one only ever existed in the dropped handle."""
+        if self.adapter.is_connected():
+            return False
+
+        self.reconnect()
+        return True
+
     def get_connection(self) -> Any:
         return self.adapter.get_connection()

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import contextlib
 from abc import ABC, abstractmethod
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
@@ -41,6 +42,31 @@ class AdapterABC(ABC):
     @property
     def database_name(self) -> str:
         return self._database_name
+
+    @abstractmethod
+    def _connect(self) -> None:
+        ...
+
+    @abstractmethod
+    def _disconnect(self) -> None:
+        """Unconditionally drop the driver handle.
+
+        Separate from :meth:`close`, which honours the ``persistent`` option and
+        may deliberately leave the handle open."""
+
+    @abstractmethod
+    def is_connected(self) -> bool:
+        ...
+
+    def reconnect(self) -> None:
+        """Throw the current connection away and open a fresh one.
+
+        The old handle is very likely dead already -- that is what makes a
+        reconnect necessary -- so failures while dropping it are ignored."""
+        with contextlib.suppress(Exception):
+            self._disconnect()
+
+        self._connect()
 
     @abstractmethod
     def version(self) -> str:
