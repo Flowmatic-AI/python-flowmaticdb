@@ -22,7 +22,7 @@ from typing import Any
 
 import pytest
 
-from flowmaticdb import AdapterError, PostgresArray, QueryWithParams, expression, identifier, raw
+from flowmaticdb import PostgresArray, QueryWithParams, expression, identifier, raw
 from flowmaticdb.adapters import AdapterABC, PsycopgAdapter
 from flowmaticdb.database import DB
 from flowmaticdb.dialects import PostgresqlDialect
@@ -929,18 +929,22 @@ def test_asyncpg_close_is_idempotent(asyncpg_db: DB) -> None:
 
 
 @requires_asyncpg
-def test_asyncpg_rejects_client_encoding_option() -> None:
-    """asyncpg is UTF-8 only, so the psycopg client_encoding option is refused loudly."""
-    with pytest.raises(AdapterError):
-        DB.connect_postgresql(
-            PG_DBNAME,
-            host=PG_HOST,
-            port=PG_PORT,
-            user=PG_USER,
-            password=PG_PASSWORD,
-            options={"client_encoding": "LATIN1"},
-            asyncpg_adapter=True,
-        )
+def test_asyncpg_ignores_client_encoding_option() -> None:
+    """asyncpg is UTF-8 only, so the psycopg client_encoding option is silently
+    ignored rather than refused: connecting still succeeds and stays UTF-8."""
+    db = DB.connect_postgresql(
+        PG_DBNAME,
+        host=PG_HOST,
+        port=PG_PORT,
+        user=PG_USER,
+        password=PG_PASSWORD,
+        options={"client_encoding": "LATIN1"},
+        asyncpg_adapter=True,
+    )
+    try:
+        assert db.query("SELECT 'é' AS accented").fetch_dict() == {"accented": "é"}
+    finally:
+        db.adapter.close()
 
 
 def test_postgres_datetime_and_json_columns(pg_adapter: PsycopgAdapter, pg_dialect: PostgresqlDialect) -> None:

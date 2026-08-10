@@ -26,8 +26,7 @@ def _single_result(result: ResultABC | list[ResultABC]) -> ResultABC:
         return result
 
     if len(result) != 1:
-        msg = f"Expected a single ResultABC for a single-row insert, got {len(result)}"
-        raise QueryError(msg)
+        raise QueryError(f"Expected a single ResultABC for a single-row insert, got {len(result)}")
 
     return result[0]
 

@@ -10,7 +10,6 @@ from datetime import date, datetime
 from datetime import time as time_of_day
 from typing import TYPE_CHECKING, Any, TypeVar
 
-from flowmaticdb import AdapterError
 from flowmaticdb._json import decode_json, encode_json
 from flowmaticdb._query_with_params import REGEX_PATTERN
 from flowmaticdb._threading import ThreadLocalStore
@@ -400,10 +399,6 @@ class AsyncpgAdapter(AdapterABC):
         return context
 
     def _connect(self) -> None:
-        if "client_encoding" in self._options:
-            msg = "asyncpg always communicates in UTF-8; the client_encoding option is not supported"
-            raise AdapterError(msg)
-
         self._ensure_loop()
 
         connect_options: dict[str, Any] = {

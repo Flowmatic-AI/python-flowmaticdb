@@ -32,8 +32,5 @@ class DeleteQuery(Query, WhereMixin, ReturningMixin):
         )
 
     def execute(self, emulate_prepare: bool = False) -> ResultABC:
-        result = super().execute(emulate_prepare)
-        if not isinstance(result, ResultABC):
-            msg = "Expected a single ResultABC, got a list"
-            raise TypeError(msg)
-        return result
+        return self._database.query_with_params(self.to_query_with_params(), emulate_prepare)
+

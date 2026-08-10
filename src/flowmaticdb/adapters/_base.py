@@ -39,8 +39,7 @@ class AdapterABC(ABC):
 
     def _ensure_not_closed(self) -> None:
         if self._closed:
-            msg = "this adapter is closed; call reconnect() to open a new connection"
-            raise AdapterError(msg)
+            raise AdapterError("this adapter is closed; call reconnect() to open a new connection")
 
     @property
     def closed(self) -> bool:

@@ -41,7 +41,7 @@ class Query(ABC):
 
         if isinstance(qwp, list):
             return [self._database.query_with_params(q, emulate_prepare) for q in qwp]
-        
+
         return self._database.query_with_params(qwp, emulate_prepare)
 
     def explain(self, emulate_prepare: bool = False) -> list[dict[str, Any]]:
