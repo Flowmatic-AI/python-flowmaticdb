@@ -110,3 +110,19 @@ def test_select_join(sql_dialect: SQLDialect, mock_db) -> None:
     q.left_join("posts", lambda join: join.on("users.id", "posts.user_id"))
     qwp: QueryWithParams = q.to_query_with_params()
     assert "LEFT JOIN" in qwp.query
+
+
+def test_select_columns_qualified_lists(sql_dialect: SQLDialect, mock_db) -> None:
+    """A two-element list is a qualified column, not a value to stringify --
+    columns() has to escape it segment by segment like the where_* family."""
+    q: SelectQuery = SelectQuery(sql_dialect, "users", database=mock_db)
+    q.columns([["users", "email"], "name"])
+    qwp: QueryWithParams = q.to_query_with_params()
+    assert qwp.query == 'SELECT "users"."email", "name" FROM "users"'
+
+
+def test_select_columns_qualified_list_with_alias(sql_dialect: SQLDialect, mock_db) -> None:
+    q: SelectQuery = SelectQuery(sql_dialect, "users", database=mock_db)
+    q.columns({"mail": ["users", "email"]})
+    qwp: QueryWithParams = q.to_query_with_params()
+    assert qwp.query == 'SELECT "users"."email" AS "mail" FROM "users"'

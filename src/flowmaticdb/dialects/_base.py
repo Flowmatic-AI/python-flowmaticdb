@@ -9,6 +9,7 @@ if TYPE_CHECKING:
     from flowmaticdb import QueryWithParams
     from flowmaticdb.query import OnConflict
     from flowmaticdb.query.ddl import AlterABC, Column, ConstraintABC
+    from flowmaticdb.query.expressions import SqlABC
 
 
 class DialectABC(ABC):
@@ -150,7 +151,7 @@ class DialectABC(ABC):
         ...
 
     @abstractmethod
-    def escape_identifier(self, identifier: str | list[str]) -> str:
+    def escape_identifier(self, identifier: str | list[Any] | SqlABC) -> str:
         ...
 
     @abstractmethod

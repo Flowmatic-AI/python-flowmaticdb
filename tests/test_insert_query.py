@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import pytest
 
-from flowmaticdb import QueryWithParams
-from flowmaticdb.dialects import SQLDialect
+from flowmaticdb import QueryError, QueryWithParams
+from flowmaticdb.adapters import SQLiteAdapter
+from flowmaticdb.database import DB
+from flowmaticdb.dialects import SQLDialect, SQLiteDialect
 from flowmaticdb.query import InsertQuery
 
 
@@ -89,3 +91,112 @@ def test_insert_last_insert_id(sql_dialect: SQLDialect, mock_db) -> None:
     q.last_insert_id("id")
     qwp: QueryWithParams = q.to_query_with_params()
     assert "INSERT" in qwp.query
+
+
+def _legacy_sqlite_db() -> DB:
+    """A database whose dialect predates RETURNING (SQLite 3.35) and ON
+    CONFLICT (3.24). The version gate is what decides, so an old version number
+    against a live in-memory database is enough to drive the emulated paths."""
+    return DB(SQLiteAdapter(":memory:"), SQLiteDialect(version="3.23"))
+
+
+def _users_table(db: DB) -> None:
+    db.create_table("users").if_not_exists().identity("id").string("name").string("email").execute()
+
+
+def test_returning_is_emulated_when_the_dialect_lacks_it() -> None:
+    """RETURNING is emulated by anything that cannot express it -- the caller
+    does not have to opt in, and never has to branch per driver."""
+    db = _legacy_sqlite_db()
+    _users_table(db)
+
+    result = (
+        db.insert("users")
+        .values({"name": "John", "email": "john@x.com"})
+        .returning(["id", "name"])
+        .last_insert_id("id")
+        .execute()
+    )
+
+    assert not isinstance(result, list)
+    row = result.fetch_dict()
+    assert row is not None
+    assert row["name"] == "John"
+    assert row["id"] == 1
+
+
+def test_emulated_returning_without_a_primary_key_column_raises() -> None:
+    """Reading the inserted row back needs the primary key column, and no row
+    at all is a worse answer than a loud one."""
+    db = _legacy_sqlite_db()
+    _users_table(db)
+
+    q = db.insert("users").values({"name": "John"}).returning(["id"])
+    with pytest.raises(QueryError, match="last_insert_id"):
+        q.execute()
+
+
+def test_native_returning_is_left_to_the_dialect() -> None:
+    """Modern SQLite has RETURNING, so nothing is emulated and no primary key
+    column is needed."""
+    db = DB.connect_sqlite(":memory:")
+    _users_table(db)
+
+    result = db.insert("users").values({"name": "John"}).returning(["id", "name"]).execute()
+
+    assert not isinstance(result, list)
+    assert result.fetch_dict() == {"id": 1, "name": "John"}
+
+
+def test_emulate_returning_forces_emulation_on_a_native_dialect() -> None:
+    """emulate_returning() is only for opting *into* the emulation on a dialect
+    that would not have needed it."""
+    db = DB.connect_sqlite(":memory:")
+    _users_table(db)
+
+    query = db.insert("users").values({"name": "John"}).returning(["id", "name"]).emulate_returning("id")
+    assert "RETURNING" not in query.to_sql()
+
+    result = query.execute()
+    assert not isinstance(result, list)
+    row = result.fetch_dict()
+    assert row is not None
+    assert row["name"] == "John"
+
+
+def test_returning_survives_a_native_on_conflict() -> None:
+    """A dialect with ON CONFLICT but no RETURNING keeps its conflict clause
+    while the row is read back separately."""
+    db = DB(SQLiteAdapter(":memory:"), SQLiteDialect(version="3.34"))
+    _users_table(db)
+    db.insert("users").values({"id": 1, "name": "John", "email": "john@x.com"}).execute()
+
+    query = (
+        db.insert("users")
+        .values({"id": 1, "name": "Jane", "email": "jane@x.com"})
+        .on_conflict_do_update(["id"])
+        .returning(["id", "name"])
+        .last_insert_id("id")
+    )
+    assert "ON CONFLICT" in query.to_sql()
+    assert "RETURNING" not in query.to_sql()
+
+    result = query.execute()
+    assert not isinstance(result, list)
+    row = result.fetch_dict()
+    assert row is not None
+    assert row["name"] == "Jane"
+
+
+def test_on_conflict_is_emulated_when_the_dialect_lacks_it() -> None:
+    """ON CONFLICT follows the same rule: emulated whenever the dialect cannot
+    express it, without emulate_on_conflict() being called."""
+    db = _legacy_sqlite_db()
+    _users_table(db)
+    db.insert("users").values({"id": 1, "name": "John", "email": "john@x.com"}).execute()
+
+    db.insert("users").values({"id": 1, "name": "John", "email": "new@x.com"}).on_conflict_do_update(["id"]).execute()
+
+    rows = db.select("users").execute().fetch_dicts()
+    assert len(rows) == 1
+    assert rows[0]["email"] == "new@x.com"

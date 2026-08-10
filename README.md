@@ -289,11 +289,11 @@ db.insert("users").values(
     {"name": "Charlie", "age": 35},
 ).execute()
 
-# With RETURNING (PostgreSQL / SQLite ≥ 3.35)
-result = db.insert("users").values({"name": "Dave"}).returning(["id"]).execute()
+# With RETURNING — native on PostgreSQL and SQLite >= 3.35, emulated elsewhere
+result = db.insert("users").values({"name": "Dave"}).returning(["id"]).last_insert_id("id").execute()
 new_id = result.scalar()
 
-# ON CONFLICT (PostgreSQL / SQLite ≥ 3.24)
+# ON CONFLICT — native on PostgreSQL, SQLite >= 3.24 and MySQL, emulated elsewhere
 db.insert("users").values({"name": "Alice"}).on_conflict_do_nothing("name").execute()
 db.insert("users").values({"name": "Alice", "age": 31}).on_conflict_do_update(
     "name", {"age": 31}
@@ -303,6 +303,33 @@ db.insert("users").values({"name": "Alice", "age": 31}).on_conflict_do_update(
 db.insert("users").values({"name": "Eve"}).last_insert_id("id").execute()
 last_id = db.last_insert_id()
 ```
+
+#### Emulated RETURNING and ON CONFLICT
+
+Both clauses work on every dialect. When the dialect cannot express one, the
+insert falls back to the equivalent sequence of statements by itself — writing a
+per-driver fallback is never necessary:
+
+| | Native | Emulated as |
+|---|---|---|
+| `RETURNING` | PostgreSQL, SQLite ≥ 3.35, MariaDB ≥ 10.5 | INSERT, then SELECT the row by its primary key |
+| `ON CONFLICT` | PostgreSQL, SQLite ≥ 3.24, MySQL, MariaDB | SELECT on the conflict columns, then INSERT or UPDATE |
+
+Emulated RETURNING reads the inserted row back by primary key, so it needs to
+know that column. Supply it with `last_insert_id("id")` (or `emulate_returning("id")`);
+without it the insert raises `QueryError` rather than handing back an empty result:
+
+```python
+db.insert("users").values({"name": "Dave"}).returning(["id"]).last_insert_id("id").execute()
+```
+
+`emulate_returning("id")` and `emulate_on_conflict("id")` are only needed to opt
+*into* the emulation on a dialect that has the clause natively — for instance to
+get identical statement sequences across environments. `emulate_on_conflict()`
+also takes `in_transaction=True` to wrap its select-then-write in a transaction.
+
+`returning()` on UPDATE and DELETE is not emulated: on a dialect without native
+RETURNING the clause is dropped and the result holds no rows.
 
 ### UPDATE
 
@@ -809,9 +836,9 @@ except DatabaseError as e:
 
 ---
 
-## Datetime and JSON Values
+## Datetime, JSON and Boolean Values
 
-`datetime` objects and JSON documents are serialized on the way into the database and deserialized on the way back out, on every adapter.
+`datetime` objects, JSON documents and booleans are serialized on the way into the database and deserialized on the way back out, on every adapter.
 
 ```python
 from datetime import datetime, timezone
@@ -845,7 +872,23 @@ How each driver is wired up:
 | mysql.connector | Native, both directions | Serialized on the way in; `MySQLResult` decodes columns the server reports as `json` |
 | sqlite3 | `DATETIME`/`TIMESTAMP`/`DATE` adapters and converters registered by `SQLiteAdapter` | `JSON`/`JSONB` adapters and converters |
 
-SQLite stores only primitives, so `SQLiteAdapter` registers custom datatypes with the `sqlite3` module and opens its connections with `detect_types=sqlite3.PARSE_DECLTYPES`. Conversion is keyed off the column's *declared* type, so a `DATETIME` or `JSON` table column is converted while an expression (`count(*)`, a computed alias) has no declared type and is returned as-is. Datetimes are written as full ISO-8601, so microseconds and UTC offsets survive the round trip.
+SQLite stores only primitives, so `SQLiteAdapter` registers custom datatypes with the `sqlite3` module and opens its connections with `detect_types=sqlite3.PARSE_DECLTYPES`. Conversion is keyed off the column's *declared* type, so a `DATETIME`, `JSON` or `BOOLEAN` table column is converted while an expression (`count(*)`, a computed alias) has no declared type and is returned as-is. Datetimes are written as full ISO-8601, so microseconds and UTC offsets survive the round trip.
+
+### Booleans
+
+Only PostgreSQL has a boolean type. SQLite stores 0/1 under a declared `BOOLEAN` column and MySQL stores a `TINYINT`, and both are read back as a real `bool`:
+
+```python
+db.create_table("flags").if_not_exists().identity("id").boolean("active").execute()
+db.insert("flags").values({"active": True}).execute()
+
+db.select("flags").execute().scalar("active")   # True, not 1
+```
+
+The two emulating dialects reach that differently, which is worth knowing when reading a table this library did not create:
+
+- **SQLite** is exact — the converter fires on the column's declared `BOOLEAN`/`BOOL` type, and nothing else is touched.
+- **MySQL** reports `BOOL` and `TINYINT` as the same wire type and drops the display width, so **every** `TINYINT` column reads back as a `bool`. `TypeEnum.INT` never maps to `TINYINT` (it is `INTEGER`/`BIGINT`), so a schema this library created is unaffected; a foreign table storing small numbers in a `TINYINT` is. Select such a column as `CAST(col AS SIGNED)` — or let a pydantic model coerce at the edge — if you need the number.
 
 ### PostgreSQL arrays — `PostgresArray`
 
@@ -905,23 +948,25 @@ Reading is unaffected — an array column always comes back as a plain `list`.
 | Case-insensitive LIKE | ✅ | Default SQLite behavior |
 | Datetime | ✅ | Custom `DATETIME`/`TIMESTAMP`/`DATE` datatype via `sqlite3` adapters and converters |
 | JSON | ✅ | Custom `JSON`/`JSONB` datatype via `sqlite3` adapters and converters |
+| Native boolean | ❌ | `TypeEnum.BOOL` → `BOOLEAN`, stored as 0/1 and converted back to `bool` on read |
 
 ### MySQL
 
 | Feature | Support | Details |
 |---------|---------|---------|
 | `ON DUPLICATE KEY` | ✅ | Via `on_conflict_do_update()` |
-| `RETURNING` | ❌ | Not supported; emulation not implemented |
+| `RETURNING` | ⚠️ | Not supported by the server (MariaDB ≥ 10.5 excepted); INSERT emulates it, UPDATE/DELETE drop the clause |
 | Auto-increment | ✅ | `AUTO_INCREMENT` |
 | Placeholders | ✅ | `?` → `%s` conversion for connector |
 | Datetime | ✅ | `TypeEnum.DATETIME` → `DATETIME(size)`, fsp clamped to 6 |
 | JSON | ✅ | `TypeEnum.JSON` → `JSON` (MySQL ≥ 5.7.8, MariaDB ≥ 10.2.7), else `TEXT` |
+| Native boolean | ❌ | `TypeEnum.BOOL` → `TINYINT`; every `TINYINT` column reads back as `bool` |
 
 ### General ANSI (SQLDialect base)
 
 - `LIMIT` / `OFFSET` — Standard ANSI syntax
 - `LIMIT ? OFFSET ?` — Parameterized
-- No native `ON CONFLICT`, `RETURNING`, `DISTINCT ON`, or `LATERAL`
+- No native `ON CONFLICT`, `RETURNING`, `DISTINCT ON`, or `LATERAL` — INSERT emulates the first two
 - No `GLOB` support
 - Regex raises `QueryError`
 
@@ -1079,6 +1124,18 @@ Use two-element lists for schema-qualified or table-qualified column names:
 
 # WRONG: "users.name" is treated as a single identifier
 # and escaped as "users.name" (non-existent column)
+```
+
+The same lists work in `columns()`, `group_by()` and `returning()` — every
+identifier is escaped segment by segment, however deeply the list nests:
+
+```python
+db.select("users").columns([["users", "email"], "name"]).execute()
+# SELECT "users"."email", "name" FROM "users"
+
+# With an alias, pass the qualified column as the dict value
+db.select("users").columns({"mail": ["users", "email"]}).execute()
+# SELECT "users"."email" AS "mail" FROM "users"
 ```
 
 For raw JOIN clauses and aggregate expressions, use `raw()`:

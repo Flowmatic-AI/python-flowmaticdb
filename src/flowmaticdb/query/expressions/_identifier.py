@@ -9,7 +9,7 @@ if TYPE_CHECKING:
 
 
 class Identifier(SqlABC):
-    def __init__(self, identifier: str | list[str]) -> None:
+    def __init__(self, identifier: str | list[Any]) -> None:
         self._identifier = identifier
 
     def sql(self, dialect: DialectABC) -> str:

@@ -10,7 +10,7 @@ def _sqlite_runtime_type(value: Any) -> str:
     if value is None:
         return "NULL"
     if isinstance(value, bool):
-        return "INTEGER"
+        return "BOOLEAN"
     if isinstance(value, datetime):
         return "DATETIME"
     if isinstance(value, date):

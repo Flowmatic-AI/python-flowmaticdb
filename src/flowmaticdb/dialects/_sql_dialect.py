@@ -29,7 +29,7 @@ from flowmaticdb.query.ddl import (
     UniqueConstraint,
 )
 from flowmaticdb.query.enums import ChainEnum, ConditionEnum, TypeEnum
-from flowmaticdb.query.expressions import Excluded, PostgresArray, Raw, SqlABC
+from flowmaticdb.query.expressions import Alias, Excluded, PostgresArray, Raw, SqlABC
 
 _TRAILING_ZEROS = re.compile(r"(\.[0-9]+?)0+$")
 
@@ -147,7 +147,7 @@ class SQLDialect(DialectABC):
                     col_parts.append(col.sql(self))
                     params.extend(col.params(self))
                 else:
-                    col_parts.append(self.escape_identifier(str(col)))
+                    col_parts.append(self.escape_identifier(col))
             query.append(" " + ", ".join(col_parts))
 
     def _build_table(self, query: list[str], params: list[Any], table: Any) -> None:
@@ -816,17 +816,23 @@ class SQLDialect(DialectABC):
         return QueryWithParams(query=f"DROP TABLE {table_str}")
 
     def _table_name(self, table: Any) -> str:
-        if isinstance(table, SqlABC):
-            return table.raw_sql(self)
-        if isinstance(table, list):
-            return ".".join(self.escape_identifier(t) for t in table)
-        return self.escape_identifier(str(table))
+        return self.escape_identifier(table)
 
     escape_chars: ClassVar[Mapping[str, str]] = {"\0": ""}
 
-    def escape_identifier(self, identifier: str | list[str]) -> str:
+    def escape_identifier(self, identifier: str | list[Any] | SqlABC) -> str:
+        if isinstance(identifier, Alias):
+            return f"{self.escape_identifier(identifier.identifier)} AS {self.escape_identifier(identifier.alias)}"
+
+        if isinstance(identifier, SqlABC):
+            return identifier.raw_sql(self)
+
+        # A list is a qualified identifier -- each segment is escaped on its own
+        # and joined with dots, so ["schema", "table", "column"] nests as deeply
+        # as it needs to.
         if isinstance(identifier, list):
-            return ".".join(self.escape_identifier(i) for i in identifier)
+            return ".".join(self.escape_identifier(segment) for segment in identifier)
+
         return self._escape(str(identifier), self.escape_identifier_char)
 
     def escape_string(self, string: str) -> str:

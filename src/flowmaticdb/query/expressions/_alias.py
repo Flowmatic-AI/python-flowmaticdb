@@ -9,9 +9,17 @@ if TYPE_CHECKING:
 
 
 class Alias(SqlABC):
-    def __init__(self, identifier: str | list[str] | SqlABC, alias: str) -> None:
+    def __init__(self, identifier: str | list[Any] | SqlABC, alias: str) -> None:
         self._identifier = identifier
         self._alias = alias
+
+    @property
+    def identifier(self) -> str | list[Any] | SqlABC:
+        return self._identifier
+
+    @property
+    def alias(self) -> str:
+        return self._alias
 
     def sql(self, dialect: DialectABC) -> str:
         if isinstance(self._identifier, SqlABC):

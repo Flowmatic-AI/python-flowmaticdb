@@ -56,9 +56,20 @@ def _convert_json(value: bytes) -> Any:
     return decode_json(value)
 
 
+def _convert_bool(value: bytes) -> bool:
+    """SQLite has no boolean type -- ``cast_bool()`` stores 0/1 -- so a BOOLEAN
+    column reads back as an integer unless it is converted here."""
+    text = value.decode("utf-8").strip()
+
+    if text.lstrip("+-").isdigit():
+        return int(text) != 0
+
+    return text.lower() in ("true", "t", "yes")
+
+
 def _register_types() -> None:
-    """Teach ``sqlite3`` the DATETIME/DATE and JSON column types SQLite itself
-    does not have, in both directions.
+    """Teach ``sqlite3`` the DATETIME/DATE, JSON and BOOLEAN column types SQLite
+    itself does not have, in both directions.
 
     The ``sqlite3`` registry is a process-wide module singleton, so this is
     global state -- but the converters only fire on connections opened with
@@ -76,6 +87,8 @@ def _register_types() -> None:
         sqlite3.register_converter("DATE", _convert_date)
         sqlite3.register_converter("JSON", _convert_json)
         sqlite3.register_converter("JSONB", _convert_json)
+        sqlite3.register_converter("BOOLEAN", _convert_bool)
+        sqlite3.register_converter("BOOL", _convert_bool)
 
 
 def _is_memory_database(database_name: str) -> bool:

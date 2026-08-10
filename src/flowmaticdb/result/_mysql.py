@@ -7,6 +7,7 @@ from flowmaticdb._json import decode_json
 from flowmaticdb.result._base import ResultABC
 
 _MYSQL_JSON_TYPE_CODE = 245
+_MYSQL_TINYINT_TYPE_CODE = 1
 
 
 class MySQLResult(ResultABC):
@@ -14,12 +15,14 @@ class MySQLResult(ResultABC):
         self._cursor = cursor
         self._columns_cache: dict[str, str] | None = None
         self._json_indexes: list[int] = []
+        self._bool_indexes: list[int] = []
 
     def columns(self) -> dict[str, str]:
         if self._columns_cache is not None:
             return dict(self._columns_cache)
         result: dict[str, str] = {}
         json_indexes: list[int] = []
+        bool_indexes: list[int] = []
         if self._cursor.description:
             for index, desc in enumerate(self._cursor.description):
                 name = desc[0]
@@ -28,19 +31,31 @@ class MySQLResult(ResultABC):
                 result[name] = type_name
                 if type_code == _MYSQL_JSON_TYPE_CODE:
                     json_indexes.append(index)
+                if type_code == _MYSQL_TINYINT_TYPE_CODE:
+                    bool_indexes.append(index)
         self._columns_cache = result
         self._json_indexes = json_indexes
+        self._bool_indexes = bool_indexes
         return dict(result)
 
     def _decode_row(self, row: Sequence[Any]) -> list[Any]:
         """mysql.connector hands JSON columns back as the raw stored text (str
-        or bytes); DATETIME/TIMESTAMP columns already arrive as datetimes."""
-        if not self._json_indexes:
+        or bytes); DATETIME/TIMESTAMP columns already arrive as datetimes.
+
+        MySQL has no boolean type either: ``TypeEnum.BOOL`` is a TINYINT, which
+        the wire protocol reports without its display width -- so every TINYINT
+        column reads back as a bool. TypeEnum.INT never maps to TINYINT, so this
+        only ever touches columns this library would have written as booleans.
+        """
+        if not self._json_indexes and not self._bool_indexes:
             return list(row)
         values = list(row)
         for index in self._json_indexes:
             if index < len(values):
                 values[index] = decode_json(values[index])
+        for index in self._bool_indexes:
+            if index < len(values) and values[index] is not None:
+                values[index] = bool(values[index])
         return values
 
     def fetch_dict(self) -> dict[str, Any] | None:

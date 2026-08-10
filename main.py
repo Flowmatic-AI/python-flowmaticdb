@@ -28,6 +28,10 @@ db.create_table("posts").if_not_exists().identity("id").string("title", not_null
 db.alter_table("users").add_string("email", size=255).execute()
 
 db.select("users")\
+    .columns([
+        ['users', 'id'],
+        ['users', 'name'],
+    ])\
     .where_raw("id = ? AND id = %s", [1, 2])\
     .execute()
 

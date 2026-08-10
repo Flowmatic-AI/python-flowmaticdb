@@ -24,7 +24,7 @@ def raw(sql: str) -> Raw:
     return Raw(sql)
 
 
-def identifier(identifier: str | list[str]) -> Identifier:
+def identifier(identifier: str | list[Any]) -> Identifier:
     return Identifier(identifier)
 
 

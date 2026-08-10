@@ -31,12 +31,30 @@ class InsertQuery(Query, ValuesMixin, OnConflictMixin, ReturningMixin, LastInser
         self._emulate_on_conflict_in_transaction = False
         self._emulate_returning = False
 
+    @property
+    def _emulating_on_conflict(self) -> bool:
+        """ON CONFLICT is emulated whenever the dialect cannot express it, and
+        on request even when it can."""
+        if self._on_conflict is None:
+            return False
+
+        return self._emulate_on_conflict or not self._dialect.on_conflict
+
+    @property
+    def _emulating_returning(self) -> bool:
+        """RETURNING is emulated whenever the dialect cannot express it, and on
+        request even when it can."""
+        if self._returning_list is None:
+            return False
+
+        return self._emulate_returning or not self._dialect.returning
+
     def to_query_with_params(self) -> QueryWithParams:
         return self._dialect.insert(
             table=self._table,
             values=self._values_list,
-            on_conflict=self._on_conflict if not self._emulate_on_conflict else None,
-            returning=self._returning_list if not self._emulate_returning else None,
+            on_conflict=None if self._emulating_on_conflict else self._on_conflict,
+            returning=None if self._emulating_returning else self._returning_list,
             last_insert_id=self._last_insert_id_col,
         )
 
@@ -47,9 +65,16 @@ class InsertQuery(Query, ValuesMixin, OnConflictMixin, ReturningMixin, LastInser
         return self._explain(self.to_query_with_params(), emulate_prepare)
 
     def execute(self, emulate_prepare: bool = False) -> ResultABC | list[ResultABC]:
-        if not self._on_conflict or (not self._emulate_on_conflict and self._dialect.on_conflict):
-            if self._emulate_returning:
-                return self._insert(self._values_list, emulate_prepare)
+        if self._emulating_returning and not self._last_insert_id_col:
+            raise QueryError(
+                "RETURNING has to be emulated on this dialect, which needs the primary key "
+                'column to read the inserted row back: chain .last_insert_id("id") '
+                "onto the insert"
+            )
+
+        if not self._emulating_on_conflict:
+            if self._emulating_returning:
+                return self._insert(self._values_list, self._on_conflict, emulate_prepare)
 
             return self._run(self.to_query_with_params(), emulate_prepare)
 
@@ -87,7 +112,7 @@ class InsertQuery(Query, ValuesMixin, OnConflictMixin, ReturningMixin, LastInser
         count = len(rows)
 
         if count == 0:
-            return self._insert([values], emulate_prepare)
+            return self._insert([values], None, emulate_prepare)
 
         if count > 1:
             raise QueryError("multiple rows in constraint")
@@ -123,22 +148,23 @@ class InsertQuery(Query, ValuesMixin, OnConflictMixin, ReturningMixin, LastInser
 
         return select_query.execute(emulate_prepare)
 
-    def _insert(self, values: list[dict[str, Any]], emulate_prepare: bool) -> ResultABC:
+    def _insert(
+        self,
+        values: list[dict[str, Any]],
+        on_conflict: OnConflict | None,
+        emulate_prepare: bool,
+    ) -> ResultABC:
         result = self._database.query_with_params(
             self._dialect.insert(
                 table=self._table,
                 values=values,
-                on_conflict=None,
-                returning=self._returning_list if not self._emulate_returning else None,
+                on_conflict=on_conflict,
+                returning=None if self._emulating_returning else self._returning_list,
                 last_insert_id=self._last_insert_id_col,
             )
         )
 
-        if (
-            not self._last_insert_id_col
-            or self._returning_list is None
-            or (not self._emulate_returning and self._dialect.returning)
-        ):
+        if not self._emulating_returning or not self._last_insert_id_col:
             return result
 
         last_insert_id_col = self._last_insert_id_col
@@ -173,7 +199,7 @@ class InsertQuery(Query, ValuesMixin, OnConflictMixin, ReturningMixin, LastInser
 
         result = update_query.execute(emulate_prepare)
 
-        if self._returning_list is None or (not self._emulate_returning and self._dialect.returning):
+        if not self._emulating_returning:
             return result
 
         def _where_group(condition_group: WhereGroup) -> None:
@@ -196,6 +222,8 @@ class InsertQuery(Query, ValuesMixin, OnConflictMixin, ReturningMixin, LastInser
         return self
 
     def emulate_on_conflict(self, last_insert_id: str, in_transaction: bool = False) -> Self:
+        """Force the select-then-insert-or-update emulation even on a dialect
+        with native ON CONFLICT. Dialects without one emulate by themselves."""
         self._emulate_on_conflict = True
         self._emulate_on_conflict_in_transaction = in_transaction
         self._last_insert_id_col = last_insert_id
@@ -203,6 +231,9 @@ class InsertQuery(Query, ValuesMixin, OnConflictMixin, ReturningMixin, LastInser
         return self
 
     def emulate_returning(self, last_insert_id: str) -> Self:
+        """Force the insert-then-select emulation even on a dialect with native
+        RETURNING. Dialects without one emulate by themselves, given the primary
+        key column -- from here or from ``last_insert_id()``."""
         self._emulate_returning = True
         self._last_insert_id_col = last_insert_id
 

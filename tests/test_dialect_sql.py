@@ -4,6 +4,7 @@ from flowmaticdb import QueryWithParams
 from flowmaticdb.dialects import SQLDialect
 from flowmaticdb.query.ddl import Column
 from flowmaticdb.query.enums import TypeEnum
+from flowmaticdb.query.expressions import Alias, Raw
 
 
 def test_select_simple(sql_dialect: SQLDialect) -> None:
@@ -264,6 +265,19 @@ def test_escape_identifier(sql_dialect: SQLDialect) -> None:
 
 def test_escape_identifier_list(sql_dialect: SQLDialect) -> None:
     assert sql_dialect.escape_identifier(["schema", "table"]) == '"schema"."table"'
+
+
+def test_escape_identifier_nested_list(sql_dialect: SQLDialect) -> None:
+    """Escaping recurses into a list, so a qualified identifier stays qualified
+    however deeply it is nested."""
+    assert sql_dialect.escape_identifier([["schema", "table"], "column"]) == '"schema"."table"."column"'
+
+
+def test_escape_identifier_expressions(sql_dialect: SQLDialect) -> None:
+    """A raw expression is rendered as-is and an alias as `<identifier> AS
+    <alias>`, both with their parts escaped by the same rules."""
+    assert sql_dialect.escape_identifier(Raw("count(*)")) == "count(*)"
+    assert sql_dialect.escape_identifier(Alias(["users", "email"], "mail")) == '"users"."email" AS "mail"'
 
 
 def test_type_mapping(sql_dialect: SQLDialect) -> None:
