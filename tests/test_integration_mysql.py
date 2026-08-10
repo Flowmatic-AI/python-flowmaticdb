@@ -1042,3 +1042,64 @@ def test_mysql_giant_select(
     carol = next(r for r in main_rows if r["name"] == "Carol")
     assert int(carol["post_count"]) == 1
     assert int(carol["total_views"]) == 999
+
+
+def test_mysql_datetime_and_json_columns(
+    mysql_adapter: MySQLAdapter, mysql_dialect: MySQLDialect
+) -> None:
+    """Datetimes bind to DATETIME/TIMESTAMP and documents to JSON columns;
+    mysql.connector returns datetimes natively while MySQLResult decodes the
+    JSON columns it reports by type code.
+    """
+    from datetime import datetime
+
+    adapter, dialect = mysql_adapter, mysql_dialect
+
+    qwp: QueryWithParams = dialect.create_table(
+        if_not_exists=False,
+        table="docs",
+        columns=[
+            Column(name="id", type=TypeEnum.INT, auto_increment=True, not_null=True),
+            Column(name="happened_at", type=TypeEnum.DATETIME, bits=6),
+            Column(name="payload", type=TypeEnum.JSON),
+        ],
+        primary_keys=["id"],
+        constraints=None,
+    )
+    assert "`happened_at` DATETIME(6)" in qwp.query
+    assert "`payload` JSON" in qwp.query
+    adapter.exec(qwp.query)
+
+    happened_at = datetime(2026, 8, 10, 12, 34, 56, 123456)  # noqa: DTZ001 - MySQL DATETIME is naive
+    payload: dict[str, Any] = {"kind": "signup", "tags": ["a", "b"], "meta": {"ok": True, "n": 3}}
+
+    qwp = dialect.insert(
+        table="docs",
+        values=[{"happened_at": happened_at, "payload": payload}],
+        on_conflict=None,
+        returning=None,
+        last_insert_id=None,
+    )
+    adapter.query_with_params(dialect, qwp)
+
+    result: ResultABC = adapter.query("SELECT `happened_at`, `payload` FROM `docs`")
+    assert result.columns() == {"happened_at": "datetime", "payload": "json"}
+    row: dict[str, Any] | None = result.fetch_dict()
+    assert row is not None
+    assert row["happened_at"] == happened_at
+    assert row["payload"] == payload
+
+    # A top-level JSON array round-trips too -- MySQL has no array type, so
+    # unlike PostgreSQL a list is unambiguously a document here.
+    qwp = dialect.update(table="docs", updates={"payload": [1, "a", None]}, where=None, returning=None)
+    adapter.query_with_params(dialect, qwp)
+    assert adapter.query("SELECT `payload` FROM `docs`").scalar() == [1, "a", None]
+
+    # TIMESTAMP columns come back as datetimes as well.
+    adapter.exec("ALTER TABLE `docs` ADD COLUMN `seen` TIMESTAMP(6) NULL")
+    adapter.query_with_params(
+        dialect, QueryWithParams(query="UPDATE `docs` SET `seen` = ?", params=[happened_at])
+    )
+    result = adapter.query("SELECT `seen` FROM `docs`")
+    assert result.columns() == {"seen": "timestamp"}
+    assert result.scalar() == happened_at

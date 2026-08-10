@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import date, datetime
 from typing import Any
 
 from flowmaticdb.result._base import ResultABC
@@ -8,6 +9,16 @@ from flowmaticdb.result._base import ResultABC
 def _sqlite_runtime_type(value: Any) -> str:
     if value is None:
         return "NULL"
+    if isinstance(value, bool):
+        return "INTEGER"
+    # Reported ahead of the primitives: the sqlite3 converters registered by
+    # SQLiteAdapter hand back these types for DATETIME/DATE/JSON columns.
+    if isinstance(value, datetime):
+        return "DATETIME"
+    if isinstance(value, date):
+        return "DATE"
+    if isinstance(value, (dict, list)):
+        return "JSON"
     if isinstance(value, int):
         return "INTEGER"
     if isinstance(value, float):

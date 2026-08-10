@@ -3,14 +3,83 @@ from __future__ import annotations
 import sqlite3
 import time
 from collections.abc import Callable
+from datetime import date, datetime
 from typing import TYPE_CHECKING, Any
 
+from flowmaticdb._json import decode_json, encode_json
 from flowmaticdb.adapters._base import AdapterABC
 from flowmaticdb.result import ResultABC, SQLite3Result
 
 if TYPE_CHECKING:
     from flowmaticdb._query_with_params import QueryWithParams
     from flowmaticdb.dialects import DialectABC
+
+
+def _adapt_datetime(value: datetime) -> str:
+    """ISO-8601 with a space separator: keeps microseconds and the UTC offset
+    (both of which the dialect's SQL-literal format drops) while staying
+    readable to SQLite's own date/time functions."""
+    return value.isoformat(sep=" ")
+
+
+def _adapt_date(value: date) -> str:
+    return value.isoformat()
+
+
+def _adapt_json(value: dict[str, Any] | list[Any]) -> str:
+    return encode_json(value)
+
+
+def _convert_datetime(value: bytes) -> datetime | str:
+    text = value.decode("utf-8")
+    try:
+        return datetime.fromisoformat(text)
+    except ValueError:
+        # A DATETIME column can hold anything SQLite accepted -- an epoch
+        # number or a partial date written by another tool. Return it as text
+        # rather than failing the fetch.
+        return text
+
+
+def _convert_date(value: bytes) -> date | str:
+    text = value.decode("utf-8")
+    try:
+        return date.fromisoformat(text)
+    except ValueError:
+        return text
+
+
+def _convert_json(value: bytes) -> Any:
+    return decode_json(value)
+
+
+def _register_types() -> None:
+    """Teach ``sqlite3`` the DATETIME/DATE and JSON column types SQLite itself
+    does not have, in both directions.
+
+    The ``sqlite3`` registry is a process-wide module singleton, so this is
+    global state -- but the converters only fire on connections opened with
+    ``PARSE_DECLTYPES``, which is exactly the connections this adapter opens.
+    Registering is idempotent (each call overwrites the same registry entry),
+    so it runs per connect instead of at import time.
+    """
+    sqlite3.register_adapter(datetime, _adapt_datetime)
+    sqlite3.register_adapter(date, _adapt_date)
+    sqlite3.register_adapter(dict, _adapt_json)
+    sqlite3.register_adapter(list, _adapt_json)
+    sqlite3.register_converter("DATETIME", _convert_datetime)
+    sqlite3.register_converter("TIMESTAMP", _convert_datetime)
+    sqlite3.register_converter("DATE", _convert_date)
+    sqlite3.register_converter("JSON", _convert_json)
+    sqlite3.register_converter("JSONB", _convert_json)
+
+
+def _cast_param(dialect: DialectABC, value: Any) -> Any:
+    """Temporals and documents are left native so the registered ``sqlite3``
+    adapters above serialize them; everything else goes through the dialect."""
+    if isinstance(value, (datetime, date, dict, list)):
+        return value
+    return dialect.cast_to_driver(value)
 
 
 class SQLiteAdapter(AdapterABC):
@@ -32,14 +101,23 @@ class SQLiteAdapter(AdapterABC):
         self._connect()
 
     def _connect(self) -> None:
+        _register_types()
+
         db_name = self._database_name
         read_only = self._options.get("read_only", False)
 
+        # PARSE_DECLTYPES is what routes a column declared DATETIME or JSON
+        # through the converters registered above. Columns that are expressions
+        # rather than table columns have no declared type and stay untouched.
         if read_only:
             uri = f"file:{db_name}?mode=ro"
-            self._connection = sqlite3.connect(uri, uri=True, isolation_level=None)
+            self._connection = sqlite3.connect(
+                uri, uri=True, isolation_level=None, detect_types=sqlite3.PARSE_DECLTYPES
+            )
         else:
-            self._connection = sqlite3.connect(db_name, isolation_level=None)
+            self._connection = sqlite3.connect(
+                db_name, isolation_level=None, detect_types=sqlite3.PARSE_DECLTYPES
+            )
 
         self._connection.row_factory = sqlite3.Row
 
@@ -112,7 +190,7 @@ class SQLiteAdapter(AdapterABC):
     ) -> ResultABC:
         query_with_params = query_with_params.percent_s_to_question_marks()
         sql = query_with_params.query
-        params = [dialect.cast_to_driver(param) for param in query_with_params.params]
+        params = [_cast_param(dialect, param) for param in query_with_params.params]
 
         start = time.time()
         error: str | None = None

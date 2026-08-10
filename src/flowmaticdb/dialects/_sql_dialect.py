@@ -7,6 +7,7 @@ from datetime import UTC, datetime
 from typing import Any, ClassVar
 
 from flowmaticdb._exceptions import QueryError
+from flowmaticdb._json import decode_json, encode_json
 from flowmaticdb._query_with_params import QueryWithParams
 from flowmaticdb.dialects._base import DialectABC
 from flowmaticdb.query import Condition, ConditionGroupABC, Join, OnConflict, OrderBy, SelectQuery, Union
@@ -28,7 +29,7 @@ from flowmaticdb.query.ddl import (
     UniqueConstraint,
 )
 from flowmaticdb.query.enums import ChainEnum, ConditionEnum, TypeEnum
-from flowmaticdb.query.expressions import Excluded, Raw, SqlABC
+from flowmaticdb.query.expressions import Excluded, PostgresArray, Raw, SqlABC
 
 _TRAILING_ZEROS = re.compile(r"(\.[0-9]+?)0+$")
 
@@ -59,6 +60,8 @@ class SQLDialect(DialectABC):
         self.returning = False
         self.lateral = False
         self.savepoints = True
+        self.json = True
+        self.jsonb = False
         self.generated_by_default_as_identity = True
         self.escape_identifier_char = '"'
         self.escape_string_char = "'"
@@ -876,6 +879,12 @@ class SQLDialect(DialectABC):
             return self.escape_string(value)
         if isinstance(value, datetime):
             return self.escape_string(self.cast_datetime(value))
+        if isinstance(value, PostgresArray):
+            # No array type here, so the array reading is dropped and the values
+            # are stored the only way this engine can hold them.
+            return self.escape_string(self.cast_json(value.values))
+        if isinstance(value, (dict, list)):
+            return self.escape_string(self.cast_json(value))
         if isinstance(value, SelectQuery):
             qwp = value.to_query_with_params()
             return f"({qwp.to_sql(self)})"
@@ -891,11 +900,18 @@ class SQLDialect(DialectABC):
             return value.strftime(self.datetime_format)
         return str(value)
 
+    def cast_json(self, value: Any) -> str:
+        return encode_json(value)
+
     def cast_to_driver(self, value: Any) -> Any:
         if isinstance(value, bool):
             return self.cast_bool(value)
         if isinstance(value, datetime):
             return self.cast_datetime(value)
+        if isinstance(value, PostgresArray):
+            return self.cast_json(value.values)
+        if isinstance(value, (dict, list)):
+            return self.cast_json(value)
         return value
 
     def parse_bool(self, value: Any) -> bool:
@@ -921,6 +937,9 @@ class SQLDialect(DialectABC):
                 return value
         return value
 
+    def parse_json(self, value: Any) -> Any:
+        return decode_json(value)
+
     def type(self, type_enum: TypeEnum, bits: int | None = None) -> str:
         size = bits or 0
         mapping = {
@@ -929,5 +948,6 @@ class SQLDialect(DialectABC):
             TypeEnum.FLOAT: "DECIMAL(30, 15)" if size > 32 else "DECIMAL(15, 7)",
             TypeEnum.STRING: "TEXT" if size > 255 else f"VARCHAR({bits or 255})",
             TypeEnum.DATETIME: "DATETIME",
+            TypeEnum.JSON: "JSON" if self.json else "TEXT",
         }
         return mapping.get(type_enum, f"VARCHAR({bits or 255})")

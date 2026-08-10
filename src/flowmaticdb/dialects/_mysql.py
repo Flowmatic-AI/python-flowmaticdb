@@ -51,6 +51,9 @@ class MySQLDialect(SQLDialect):
         self.lateral = (not self._is_mariadb) and self._version >= 80014
         self.on_conflict = True if self._is_mariadb else self._version >= 40100
         self.returning = self._is_mariadb and self._version >= 100500
+        # MariaDB spells JSON as a LONGTEXT alias from 10.2.7; MySQL has a real
+        # native JSON type from 5.7.8. Older servers fall back to TEXT.
+        self.json = self._version >= 100207 if self._is_mariadb else self._version >= 50708
 
     def begin_transaction(self, name: str | None = None) -> QueryWithParams:
         return QueryWithParams(query="START TRANSACTION")

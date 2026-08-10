@@ -22,7 +22,7 @@ from typing import Any
 
 import pytest
 
-from flowmaticdb import AdapterError, QueryWithParams, expression, identifier, raw
+from flowmaticdb import AdapterError, PostgresArray, QueryWithParams, expression, identifier, raw
 from flowmaticdb.adapters import AdapterABC, PsycopgAdapter
 from flowmaticdb.database import DB
 from flowmaticdb.dialects import PostgresqlDialect
@@ -359,12 +359,12 @@ def test_postgres_conditions(pg_adapter: PsycopgAdapter, pg_dialect: PostgresqlD
     assert {r["name"] for r in rows} == {"Alice"}
 
     q = SelectQuery(dialect, "cond_t", database=db)
-    q.where_operator("tags", "@>", ["a", "b"])
+    q.where_operator("tags", "@>", PostgresArray(["a", "b"]))
     rows = adapter.query_with_params(dialect, q.to_query_with_params()).fetch_dicts()
     assert {r["name"] for r in rows} == {"Alice"}
 
     q = SelectQuery(dialect, "cond_t", database=db)
-    q.where_operator("tags", "<@", ["a", "b", "c"])
+    q.where_operator("tags", "<@", PostgresArray(["a", "b", "c"]))
     rows = adapter.query_with_params(dialect, q.to_query_with_params()).fetch_dicts()
     assert {r["name"] for r in rows} == {"Alice", "Charlie", "Dora"}
 
@@ -670,7 +670,7 @@ def test_postgres_giant_select(pg_adapter: PsycopgAdapter, pg_dialect: Postgresq
     q.where_like("email", "%@x.com")
     q.where_is_not_null("email")
     q.where_regex("name", "^A|B")
-    q.where_operator("tags", "@>", ["a"])
+    q.where_operator("tags", "@>", PostgresArray(["a"]))
     q.group_by(["name"])
     q.having_raw('count("p"."id") > 0')
     q.order_by_asc("name")
@@ -941,3 +941,168 @@ def test_asyncpg_rejects_client_encoding_option() -> None:
             options={"client_encoding": "LATIN1"},
             asyncpg_adapter=True,
         )
+
+
+def test_postgres_datetime_and_json_columns(pg_adapter: PsycopgAdapter, pg_dialect: PostgresqlDialect) -> None:
+    """Datetimes bind to TIMESTAMP/TIMESTAMPTZ and dicts to JSON/JSONB over
+    psycopg, and both come back as Python objects.
+    """
+    from datetime import timedelta, timezone
+
+    adapter, dialect = pg_adapter, pg_dialect
+    db = DB(adapter, dialect)
+    _drop(adapter, "doc_t")
+
+    qwp: QueryWithParams = dialect.create_table(
+        if_not_exists=False,
+        table="doc_t",
+        columns=[
+            Column(name="id", type=TypeEnum.INT, auto_increment=True, not_null=True),
+            Column(name="happened_at", type=TypeEnum.DATETIME),
+            Column(name="payload", type=TypeEnum.JSON),
+        ],
+        primary_keys=["id"],
+        constraints=None,
+    )
+    assert '"happened_at" TIMESTAMPTZ' in qwp.query
+    assert '"payload" JSONB' in qwp.query
+    adapter.exec(qwp.query)
+
+    aware = datetime(2026, 8, 10, 12, 34, 56, 123456, tzinfo=timezone(timedelta(hours=2)))
+    payload = {"kind": "signup", "tags": ["a", "b"], "meta": {"ok": True, "n": 3}}
+
+    iq = InsertQuery(dialect, "doc_t", database=db)
+    iq.values({"happened_at": aware, "payload": payload})
+    adapter.query_with_params(dialect, iq.to_query_with_params())
+
+    result: ResultABC = adapter.query('SELECT "happened_at", "payload" FROM "doc_t"')
+    assert result.columns() == {"happened_at": "timestamptz", "payload": "jsonb"}
+    row = result.fetch_dict()
+    assert row is not None
+    assert row["happened_at"] == aware
+    assert row["payload"] == payload
+
+    # TIMESTAMP WITHOUT TIME ZONE keeps the naive value it was given.
+    adapter.exec('ALTER TABLE "doc_t" ADD COLUMN "seen" TIMESTAMP')
+    naive = datetime(2026, 1, 2, 3, 4, 5, 678901)  # noqa: DTZ001 - the column is naive
+    adapter.query_with_params(
+        dialect, QueryWithParams(query='UPDATE "doc_t" SET "seen" = ?', params=[naive])
+    )
+    assert adapter.query('SELECT "seen" FROM "doc_t"').scalar() == naive
+
+    _drop(adapter, "doc_t")
+
+
+def test_postgres_bare_list_is_json_and_postgres_array_is_an_array(
+    pg_adapter: PsycopgAdapter, pg_dialect: PostgresqlDialect
+) -> None:
+    """PostgreSQL has both a JSON and a real array type and nothing in a list
+    says which is meant, so a bare list is a document (as on every other engine)
+    and the array reading is opt-in via PostgresArray.
+    """
+    adapter, dialect = pg_adapter, pg_dialect
+    _drop(adapter, "arr_t")
+    adapter.exec('CREATE TABLE "arr_t" ("tags" TEXT[], "payload" JSONB)')
+
+    adapter.query_with_params(
+        dialect,
+        QueryWithParams(
+            query='INSERT INTO "arr_t" ("tags", "payload") VALUES (?, ?)',
+            params=[PostgresArray(["a", "b"]), [1, "a"]],
+        ),
+    )
+
+    # Reads are unaffected: an array column still comes back as a plain list.
+    row = adapter.query('SELECT "tags", "payload" FROM "arr_t"').fetch_dict()
+    assert row is not None
+    assert row["tags"] == ["a", "b"]
+    assert row["payload"] == [1, "a"]
+
+    _drop(adapter, "arr_t")
+
+
+def test_postgres_bare_list_is_rejected_by_an_array_column(
+    pg_adapter: PsycopgAdapter, pg_dialect: PostgresqlDialect
+) -> None:
+    """The flip side of the default: a bare list aimed at an array column is
+    sent as JSON and refused, instead of quietly being taken as an array."""
+    import psycopg
+
+    adapter, dialect = pg_adapter, pg_dialect
+    _drop(adapter, "arr_reject")
+    adapter.exec('CREATE TABLE "arr_reject" ("tags" TEXT[])')
+
+    with pytest.raises(psycopg.errors.InvalidTextRepresentation):
+        adapter.query_with_params(
+            dialect,
+            QueryWithParams(query='INSERT INTO "arr_reject" ("tags") VALUES (?)', params=[["a", "b"]]),
+        )
+
+    _drop(adapter, "arr_reject")
+
+
+def test_postgres_array_inlines_as_an_array_literal(
+    pg_adapter: PsycopgAdapter, pg_dialect: PostgresqlDialect
+) -> None:
+    """emulate_prepare renders params into the SQL, where a PostgresArray has to
+    become an ARRAY[...] literal rather than a JSON string."""
+    adapter, dialect = pg_adapter, pg_dialect
+
+    qwp = QueryWithParams(query="SELECT ? AS a, ? AS j", params=[PostgresArray(["a", "b"]), [1, 2]])
+    assert qwp.to_sql(dialect) == "SELECT ARRAY['a', 'b'] AS a, '[1, 2]' AS j"
+
+    row = adapter.query_with_params(dialect, qwp, emulate_prepare=True).fetch_dict()
+    assert row is not None
+    assert row["a"] == ["a", "b"]
+
+
+@requires_asyncpg
+def test_asyncpg_datetime_and_json_columns(asyncpg_db: DB) -> None:
+    """asyncpg resolves each parameter against the placeholder's declared type,
+    so the same values land the same way they do over psycopg: a bare list is a
+    document, and an array column needs PostgresArray.
+    """
+    from datetime import timedelta, timezone
+
+    adapter, dialect = asyncpg_db.adapter, asyncpg_db.dialect
+    _drop(adapter, "asyncpg_doc")
+    adapter.exec(
+        'CREATE TABLE "asyncpg_doc" ('
+        '"id" SERIAL PRIMARY KEY, "happened_at" TIMESTAMPTZ, "payload" JSONB, '
+        '"plain" JSON, "tags" TEXT[], "rendered" TEXT)'
+    )
+
+    aware = datetime(2026, 8, 10, 12, 34, 56, 123456, tzinfo=timezone(timedelta(hours=2)))
+    payload = {"kind": "signup", "tags": ["a", "b"], "meta": {"ok": True, "n": 3}}
+
+    adapter.query_with_params(
+        dialect,
+        QueryWithParams(
+            query=(
+                'INSERT INTO "asyncpg_doc" ("happened_at", "payload", "plain", "tags", "rendered") '
+                "VALUES (?, ?, ?, ?, ?)"
+            ),
+            params=[aware, payload, [1, "a"], PostgresArray(["a", "b"]), payload],
+        ),
+    )
+
+    result: ResultABC = adapter.query(
+        'SELECT "happened_at", "payload", "plain", "tags", "rendered" FROM "asyncpg_doc"'
+    )
+    assert result.columns() == {
+        "happened_at": "timestamptz",
+        "payload": "jsonb",
+        "plain": "json",
+        "tags": "text[]",
+        "rendered": "text",
+    }
+    row = result.fetch_dict()
+    assert row is not None
+    assert row["happened_at"] == aware
+    assert row["payload"] == payload
+    assert row["plain"] == [1, "a"]
+    assert row["tags"] == ["a", "b"]
+    # Bound to TEXT the document is rendered rather than typed.
+    assert row["rendered"] == '{"kind": "signup", "tags": ["a", "b"], "meta": {"ok": true, "n": 3}}'
+
+    _drop(adapter, "asyncpg_doc")

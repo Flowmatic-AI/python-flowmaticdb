@@ -7,3 +7,4 @@ class TypeEnum(Enum):
     FLOAT = 3
     STRING = 4
     DATETIME = 5
+    JSON = 6

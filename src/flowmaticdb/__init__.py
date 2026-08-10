@@ -11,11 +11,13 @@ from flowmaticdb._helpers import (
     sub_query,
 )
 from flowmaticdb._query_with_params import QueryWithParams
+from flowmaticdb.query.expressions import PostgresArray
 
 __all__ = [
     "AdapterError",
     "DatabaseError",
     "DriverError",
+    "PostgresArray",
     "QueryError",
     "QueryWithParams",
     "QueryWithParamsError",

@@ -1,27 +1,49 @@
 from __future__ import annotations
 
+from collections.abc import Sequence
 from typing import Any
 
+from flowmaticdb._json import decode_json
 from flowmaticdb.result._base import ResultABC
+
+_MYSQL_JSON_TYPE_CODE = 245
 
 
 class MySQLResult(ResultABC):
     def __init__(self, cursor: Any) -> None:
         self._cursor = cursor
         self._columns_cache: dict[str, str] | None = None
+        # Positional rather than keyed by name, so duplicate column names in a
+        # join still decode the right values.
+        self._json_indexes: list[int] = []
 
     def columns(self) -> dict[str, str]:
         if self._columns_cache is not None:
             return dict(self._columns_cache)
         result: dict[str, str] = {}
+        json_indexes: list[int] = []
         if self._cursor.description:
-            for desc in self._cursor.description:
+            for index, desc in enumerate(self._cursor.description):
                 name = desc[0]
                 type_code = desc[1]
                 type_name = _MYSQL_TYPE_NAMES.get(type_code, "unknown")
                 result[name] = type_name
+                if type_code == _MYSQL_JSON_TYPE_CODE:
+                    json_indexes.append(index)
         self._columns_cache = result
+        self._json_indexes = json_indexes
         return dict(result)
+
+    def _decode_row(self, row: Sequence[Any]) -> list[Any]:
+        """mysql.connector hands JSON columns back as the raw stored text (str
+        or bytes); DATETIME/TIMESTAMP columns already arrive as datetimes."""
+        if not self._json_indexes:
+            return list(row)
+        values = list(row)
+        for index in self._json_indexes:
+            if index < len(values):
+                values[index] = decode_json(values[index])
+        return values
 
     def fetch_dict(self) -> dict[str, Any] | None:
         row = self._cursor.fetchone()
@@ -30,7 +52,7 @@ class MySQLResult(ResultABC):
         if self._columns_cache is None:
             self.columns()
         if self._columns_cache:
-            return dict(zip(self._columns_cache.keys(), row))
+            return dict(zip(self._columns_cache.keys(), self._decode_row(row)))
         return dict(row)
 
     def fetch_dicts(self) -> list[dict[str, Any]]:
@@ -40,7 +62,7 @@ class MySQLResult(ResultABC):
         if not self._columns_cache:
             return [dict(r) for r in rows]
         cols = list(self._columns_cache.keys())
-        return [dict(zip(cols, row)) for row in rows]
+        return [dict(zip(cols, self._decode_row(row))) for row in rows]
 
 _MYSQL_TYPE_NAMES: dict[int, str] = {
     0: "decimal",

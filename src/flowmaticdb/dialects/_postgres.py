@@ -10,6 +10,7 @@ from flowmaticdb.dialects._sql_dialect import SQLDialect
 from flowmaticdb.query import Condition, OnConflict
 from flowmaticdb.query.ddl import Column
 from flowmaticdb.query.enums import ConditionEnum, TypeEnum
+from flowmaticdb.query.expressions import PostgresArray
 
 _TZ_OFFSET_RE = re.compile(r"([+-]\d{2})$")
 
@@ -48,6 +49,8 @@ class PostgresqlDialect(SQLDialect):
         self.on_conflict = v >= 90500
         self.generated_by_default_as_identity = v >= 170000
         self.returning = v >= 80200
+        self.json = v >= 90200
+        self.jsonb = v >= 90400
 
     def _build_on_conflict(
         self,
@@ -118,7 +121,25 @@ class PostgresqlDialect(SQLDialect):
         if isinstance(value, bool):
             return "TRUE" if value else "FALSE"
 
+        if isinstance(value, PostgresArray):
+            if not value.values:
+                return "'{}'"
+            items = ", ".join(self.cast_to_query(item) for item in value.values)
+            return f"ARRAY[{items}]"
+
         return super().cast_to_query(value)
+
+    def cast_to_driver(self, value: Any) -> Any:
+        # PostgreSQL is the one supported engine with a real array type, and both
+        # drivers bind a Python list as one -- which is exactly why the array
+        # reading has to be asked for. A bare list stays a JSON document (base
+        # behaviour); only PostgresArray is unwrapped for the driver to bind as
+        # an array. Element types are left alone so the driver types them
+        # natively (a list of datetimes becomes timestamptz[], not text[]).
+        if isinstance(value, PostgresArray):
+            return list(value.values)
+
+        return super().cast_to_driver(value)
 
     def cast_bool(self, value: bool) -> bool | int:
         return value
@@ -150,4 +171,6 @@ class PostgresqlDialect(SQLDialect):
             return "DOUBLE PRECISION" if size > 32 else "REAL"
         if type_enum == TypeEnum.DATETIME:
             return "TIMESTAMPTZ"
+        if type_enum == TypeEnum.JSON and self.jsonb:
+            return "JSONB"
         return super().type(type_enum, bits)

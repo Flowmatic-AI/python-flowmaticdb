@@ -252,3 +252,111 @@ def test_last_insert_id() -> None:
     assert lid >= 1
 
     adapter.close()
+
+
+def test_sqlite_datetime_and_json_column_types() -> None:
+    """DATETIME and JSON are custom sqlite3 datatypes: SQLite stores only
+    primitives, so SQLiteAdapter registers adapters that serialize datetimes and
+    documents on the way in and converters that rebuild them on the way out.
+    """
+    from datetime import date, datetime, timedelta, timezone
+
+    from flowmaticdb.query.enums import TypeEnum
+
+    adapter = SQLiteAdapter(database_name=":memory:")
+    dialect = SQLiteDialect(version=adapter.version())
+
+    qwp: QueryWithParams = dialect.create_table(
+        if_not_exists=False,
+        table="events",
+        columns=[
+            Column(name="id", type=TypeEnum.INT, auto_increment=True, not_null=True),
+            Column(name="happened_at", type=TypeEnum.DATETIME),
+            Column(name="payload", type=TypeEnum.JSON),
+        ],
+        primary_keys=["id"],
+        constraints=None,
+    )
+    assert '"happened_at" DATETIME' in qwp.query
+    assert '"payload" JSON' in qwp.query
+    adapter.exec(qwp.query)
+
+    # An offset and microseconds survive: the sqlite3 adapter writes full
+    # ISO-8601, not the dialect's second-resolution SQL literal format.
+    aware = datetime(2026, 8, 10, 12, 34, 56, 123456, tzinfo=timezone(timedelta(hours=2)))
+    payload = {"kind": "signup", "tags": ["a", "b"], "meta": {"ok": True, "n": 3}}
+
+    qwp = dialect.insert(
+        table="events",
+        values=[{"happened_at": aware, "payload": payload}],
+        on_conflict=None,
+        returning=None,
+        last_insert_id=None,
+    )
+    adapter.query_with_params(dialect, qwp)
+
+    result: ResultABC = adapter.query('SELECT "happened_at", "payload" FROM "events"')
+    row: dict[str, Any] | None = result.fetch_dict()
+    assert row is not None
+    assert row["happened_at"] == aware
+    assert row["payload"] == payload
+    assert result.columns() == {"happened_at": "DATETIME", "payload": "JSON"}
+
+    # A top-level JSON array, and a naive datetime, round-trip too.
+    naive = datetime(2026, 1, 2, 3, 4, 5)  # noqa: DTZ001 - naive on purpose
+    qwp = dialect.update(
+        table="events",
+        updates={"happened_at": naive, "payload": [1, "a", None]},
+        where=None,
+        returning=None,
+    )
+    adapter.query_with_params(dialect, qwp)
+    row = adapter.query('SELECT "happened_at", "payload" FROM "events"').fetch_dict()
+    assert row is not None
+    assert row["happened_at"] == naive
+    assert row["payload"] == [1, "a", None]
+
+    # Columns declared DATE get a date back, and date params serialize.
+    adapter.exec('CREATE TABLE "days" ("d" DATE)')
+    adapter.query_with_params(
+        dialect, QueryWithParams(query='INSERT INTO "days" ("d") VALUES (?)', params=[date(2026, 8, 10)])
+    )
+    assert adapter.query('SELECT "d" FROM "days"').scalar() == date(2026, 8, 10)
+
+    adapter.close()
+
+
+def test_sqlite_declared_types_only_convert_table_columns() -> None:
+    """PARSE_DECLTYPES keys off the column's declared type, so expressions and
+    untyped columns are handed back exactly as SQLite stored them."""
+    from datetime import datetime
+
+    adapter = SQLiteAdapter(database_name=":memory:")
+
+    adapter.exec('CREATE TABLE "t" ("ts" DATETIME, "note" TEXT, "n" INTEGER)')
+    adapter.exec("INSERT INTO \"t\" VALUES ('2026-08-10 12:00:00', '{\"k\": \"v\"}', 7)")
+
+    row: dict[str, Any] | None = adapter.query(
+        'SELECT "ts", "note", "n", count(*) AS "c" FROM "t"'
+    ).fetch_dict()
+    assert row is not None
+    assert isinstance(row["ts"], datetime)
+    # TEXT has no converter, so JSON-looking text stays text.
+    assert row["note"] == '{"k": "v"}'
+    assert row["n"] == 7
+    assert row["c"] == 1
+
+    adapter.close()
+
+
+def test_sqlite_datetime_column_keeps_unparseable_values() -> None:
+    """A DATETIME column can hold whatever SQLite accepted; a value the
+    converter cannot read comes back as text instead of failing the fetch."""
+    adapter = SQLiteAdapter(database_name=":memory:")
+
+    adapter.exec('CREATE TABLE "t" ("ts" DATETIME)')
+    adapter.exec("INSERT INTO \"t\" VALUES ('not a timestamp')")
+
+    assert adapter.query('SELECT "ts" FROM "t"').scalar() == "not a timestamp"
+
+    adapter.close()

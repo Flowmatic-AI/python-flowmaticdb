@@ -170,6 +170,10 @@ class DialectABC(ABC):
         ...
 
     @abstractmethod
+    def cast_json(self, value: Any) -> str:
+        ...
+
+    @abstractmethod
     def cast_to_driver(self, value: Any) -> Any:
         ...
 
@@ -179,6 +183,10 @@ class DialectABC(ABC):
 
     @abstractmethod
     def parse_datetime(self, value: Any) -> Any:
+        ...
+
+    @abstractmethod
+    def parse_json(self, value: Any) -> Any:
         ...
 
     @abstractmethod
