@@ -25,10 +25,10 @@ if TYPE_CHECKING:
 
 
 class DatabaseABC:
-    def __init__(self, adapter: AdapterABC, dialect: DialectABC, ensure_connected: bool = False) -> None:
+    def __init__(self, adapter: AdapterABC, dialect: DialectABC, ensure_always_connected: bool = False) -> None:
         self._adapter = adapter
         self._dialect = dialect
-        self._ensure_connected = ensure_connected
+        self._ensure_always_connected = ensure_always_connected
         self._savepoints: list[str] = []
 
     @property
@@ -40,17 +40,17 @@ class DatabaseABC:
         return self._dialect
 
     @property
-    def ensure_connected(self) -> bool:
-        return self._ensure_connected
+    def ensure_always_connected(self) -> bool:
+        return self._ensure_always_connected
 
     def exec(self, query: str) -> None:
-        if self._ensure_connected:
+        if self._ensure_always_connected:
             self.reconnect_if_disconnected()
 
         return self._adapter.exec(query)
 
     def query(self, query: str) -> ResultABC:
-        if self._ensure_connected:
+        if self._ensure_always_connected:
             self.reconnect_if_disconnected()
 
         return self._adapter.query(query)
@@ -61,7 +61,7 @@ class DatabaseABC:
         return self.query_with_params(qwp, emulate)
 
     def query_with_params(self, qwp: QueryWithParams, emulate: bool = False) -> ResultABC:
-        if self._ensure_connected:
+        if self._ensure_always_connected:
             self.reconnect_if_disconnected()
 
         if len(qwp.params) > 0:

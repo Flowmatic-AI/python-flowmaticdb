@@ -14,7 +14,7 @@ class Database(DatabaseABC):
         startup_queries: list[str] | None = None,
         options: dict[str, Any] | None = None,
         debug_callback: Callable[[str, float, str | None], None] | None = None,
-        ensure_connected: bool = False,
+        ensure_always_connected: bool = False,
     ) -> Self:
         from flowmaticdb.adapters import SQLiteAdapter
         from flowmaticdb.dialects import SQLiteDialect
@@ -25,7 +25,7 @@ class Database(DatabaseABC):
             options=options,
             debug_callback=debug_callback,
         )
-        return cls(adapter, SQLiteDialect(version=adapter.version(), options=options or {}), ensure_connected)
+        return cls(adapter, SQLiteDialect(version=adapter.version(), options=options or {}), ensure_always_connected)
 
     @classmethod
     def connect_postgresql(
@@ -39,7 +39,7 @@ class Database(DatabaseABC):
         options: dict[str, Any] | None = None,
         debug_callback: Callable[[str, float, str | None], None] | None = None,
         asyncpg_adapter: bool = True,
-        ensure_connected: bool = False,
+        ensure_always_connected: bool = False,
     ) -> Self:
         from flowmaticdb.adapters import AdapterABC, AsyncpgAdapter, PsycopgAdapter
         from flowmaticdb.dialects import PostgresqlDialect
@@ -67,7 +67,7 @@ class Database(DatabaseABC):
                 options=options,
                 debug_callback=debug_callback,
             )
-        return cls(adapter, PostgresqlDialect(version=adapter.version(), options=options or {}), ensure_connected)
+        return cls(adapter, PostgresqlDialect(version=adapter.version(), options=options or {}), ensure_always_connected)
 
     @classmethod
     def _connect_mysql_family(
@@ -81,7 +81,7 @@ class Database(DatabaseABC):
         options: dict[str, Any] | None,
         debug_callback: Callable[[str, float, str | None], None] | None,
         is_mariadb: bool,
-        ensure_connected: bool,
+        ensure_always_connected: bool,
     ) -> Self:
         from flowmaticdb.adapters import MySQLAdapter
         from flowmaticdb.dialects import MySQLDialect
@@ -99,7 +99,7 @@ class Database(DatabaseABC):
         return cls(
             adapter,
             MySQLDialect(version=adapter.version(), options=options or {}, is_mariadb=is_mariadb),
-            ensure_connected,
+            ensure_always_connected,
         )
 
     @classmethod
@@ -113,7 +113,7 @@ class Database(DatabaseABC):
         startup_queries: list[str] | None = None,
         options: dict[str, Any] | None = None,
         debug_callback: Callable[[str, float, str | None], None] | None = None,
-        ensure_connected: bool = False,
+        ensure_always_connected: bool = False,
     ) -> Self:
         return cls._connect_mysql_family(
             name,
@@ -125,7 +125,7 @@ class Database(DatabaseABC):
             options,
             debug_callback,
             is_mariadb=False,
-            ensure_connected=ensure_connected,
+            ensure_always_connected=ensure_always_connected,
         )
 
     @classmethod
@@ -139,7 +139,7 @@ class Database(DatabaseABC):
         startup_queries: list[str] | None = None,
         options: dict[str, Any] | None = None,
         debug_callback: Callable[[str, float, str | None], None] | None = None,
-        ensure_connected: bool = False,
+        ensure_always_connected: bool = False,
     ) -> Self:
         return cls._connect_mysql_family(
             name,
@@ -151,7 +151,7 @@ class Database(DatabaseABC):
             options,
             debug_callback,
             is_mariadb=True,
-            ensure_connected=ensure_connected,
+            ensure_always_connected=ensure_always_connected,
         )
 
     @classmethod
