@@ -159,28 +159,12 @@ class PsycopgAdapter(AdapterABC):
 
     def is_connected(self) -> bool:
         import psycopg
-        from psycopg.pq import TransactionStatus
 
         if self._connection.closed:
             return False
 
-        status = self._connection.info.transaction_status
-
-        # UNKNOWN is how libpq reports a connection it can no longer use.
-        if status == TransactionStatus.UNKNOWN:
-            return False
-
-        # Inside a transaction the local status is the only usable answer: a
-        # ping would be an extra statement in it, and in a failed transaction
-        # (INERROR) it would fail without the connection being dead.
-        if status != TransactionStatus.IDLE:
-            return True
-
-        # libpq only learns about a backend that died while idle on the next
-        # round trip, so an idle connection is pinged (as mysql.connector's own
-        # is_connected() does) rather than trusted.
         try:
-            self._connection.execute(b"SELECT 1")
+            self._connection.execute("SELECT 1")
         except psycopg.Error:
             return False
         return True
@@ -406,7 +390,7 @@ class AsyncpgAdapter(AdapterABC):
     def is_connected(self) -> bool:
         if self._loop.is_closed():
             return False
-        return not bool(self._connection.is_closed())
+        return not self._connection.is_closed()
 
     def reconnect(self) -> None:
         # close() tears the loop down as well, so a reconnect after it has to

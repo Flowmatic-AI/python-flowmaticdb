@@ -91,7 +91,7 @@ class MySQLAdapter(AdapterABC):
         self._connection.close()
 
     def is_connected(self) -> bool:
-        return bool(self._connection.is_connected())
+        return self._connection.is_connected()
 
     def _drain_cursor(self) -> None:
         if self._current_cursor is not None:

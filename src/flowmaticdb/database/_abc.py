@@ -25,9 +25,10 @@ if TYPE_CHECKING:
 
 
 class DatabaseABC:
-    def __init__(self, adapter: AdapterABC, dialect: DialectABC) -> None:
+    def __init__(self, adapter: AdapterABC, dialect: DialectABC, ensure_connected: bool = False) -> None:
         self._adapter = adapter
         self._dialect = dialect
+        self._ensure_connected = ensure_connected
         self._savepoints: list[str] = []
 
     @property
@@ -38,10 +39,20 @@ class DatabaseABC:
     def dialect(self) -> DialectABC:
         return self._dialect
 
+    @property
+    def ensure_connected(self) -> bool:
+        return self._ensure_connected
+
     def exec(self, query: str) -> None:
+        if self._ensure_connected:
+            self.reconnect_if_disconnected()
+
         return self._adapter.exec(query)
 
     def query(self, query: str) -> ResultABC:
+        if self._ensure_connected:
+            self.reconnect_if_disconnected()
+
         return self._adapter.query(query)
 
     def prepared(self, query: str, params: list[Any] | None = None, emulate: bool = False) -> ResultABC:
@@ -50,6 +61,9 @@ class DatabaseABC:
         return self.query_with_params(qwp, emulate)
 
     def query_with_params(self, qwp: QueryWithParams, emulate: bool = False) -> ResultABC:
+        if self._ensure_connected:
+            self.reconnect_if_disconnected()
+
         if len(qwp.params) > 0:
             return self._adapter.query_with_params(self._dialect, qwp, emulate)
         return self._adapter.query(qwp.query)
@@ -150,3 +164,23 @@ class DatabaseABC:
     def table(self, table: str | list[str]) -> Table:
         from flowmaticdb.database._table import Table
         return Table(self, self._dialect, table)
+
+    def close(self) -> None:
+        self.adapter.close()
+    
+    def is_connected(self) -> bool:
+        return self.adapter.is_connected()
+
+    def reconnect(self) -> None:
+        self._savepoints = []
+        self.adapter.reconnect()
+
+    def reconnect_if_disconnected(self) -> bool:
+        if self.adapter.is_connected():
+            return False
+
+        self.reconnect()
+        return True
+
+    def get_connection(self) -> Any:
+        return self.adapter.get_connection()
