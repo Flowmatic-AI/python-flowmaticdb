@@ -145,5 +145,8 @@ class Database(DatabaseABC):
 
         return drivers
 
+    def close(self) -> None:
+        self.adapter.close()
+
     def get_connection(self) -> Any:
         return self.adapter.get_connection()
