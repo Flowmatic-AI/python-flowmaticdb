@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Any, Self, TypeVar
 
+from flowmaticdb._threading import ThreadLocalStore
 from flowmaticdb.result import ResultABC
 
 T = TypeVar("T")
@@ -29,7 +30,15 @@ class DatabaseABC:
         self._adapter = adapter
         self._dialect = dialect
         self._ensure_always_connected = ensure_always_connected
-        self._savepoints: list[str] = []
+        self._savepoint_stacks: ThreadLocalStore[list[str]] = ThreadLocalStore()
+
+    @property
+    def _savepoints(self) -> list[str]:
+        stack = self._savepoint_stacks.current()
+        if stack is None:
+            stack = []
+            self._savepoint_stacks.set(stack)
+        return stack
 
     @property
     def adapter(self) -> AdapterABC:
@@ -84,7 +93,7 @@ class DatabaseABC:
             return
 
         if release_savepoints or len(self._savepoints) == 0:
-            self._savepoints = []
+            self._savepoints.clear()
             qwp = self._dialect.commit_transaction(name)
             self._adapter.commit_transaction(qwp.query)
             return
@@ -97,7 +106,7 @@ class DatabaseABC:
             return
 
         if release_savepoints or len(self._savepoints) == 0:
-            self._savepoints = []
+            self._savepoints.clear()
             qwp = self._dialect.rollback_transaction(name)
             self._adapter.rollback_transaction(qwp.query)
             return
@@ -172,7 +181,7 @@ class DatabaseABC:
         return self.adapter.is_connected()
 
     def reconnect(self) -> None:
-        self._savepoints = []
+        self._savepoints.clear()
         self.adapter.reconnect()
 
     def reconnect_if_disconnected(self) -> bool:

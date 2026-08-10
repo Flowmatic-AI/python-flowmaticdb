@@ -13,7 +13,7 @@ pip install -r requirements.txt
 
 | Command | Purpose |
 |---------|---------|
-| `python3 -m pytest` | Run all tests (unit + SQLite integration; 398 collected, 2 pre-existing failures in `test_database_port.py`) |
+| `python3 -m pytest` | Run all tests (unit + SQLite integration; 414 collected without a server, 2 pre-existing failures in `test_database_port.py`) |
 | `python3 -m pytest tests/test_integration_sqlite.py` | SQLite integration tests |
 | `python3 -m pytest tests/test_integration_postgres.py` | PostgreSQL integration tests (skips when PG not reachable on localhost:5432; run `docker compose up -d postgres`) |
 | `python3 -m pytest tests/test_integration_mysql.py` | MySQL integration tests (skips when MySQL not reachable on localhost:3306; run `docker start sentience-v3-mysql-1` or any `mysql` container with `MYSQL_ALLOW_EMPTY_PASSWORD=yes` on port 3306 — the suite auto-creates the `flowmaticdb` database) |
@@ -29,7 +29,7 @@ No Makefile, CI workflows, or pre-commit hooks exist.
 Five pillars under `src/flowmaticdb/`:
 
 - **`dialects/`** — SQL generation (`SQLDialect` base, `PostgresqlDialect`, `SQLiteDialect`). `SQLDialect` is the largest file (~713 lines).
-- **`adapters/`** — Connection wrappers (`SQLiteAdapter`, `PsycopgAdapter`, `AsyncpgAdapter`, `MySQLAdapter`). Connection lifecycle is four methods: `_connect()` opens, `_disconnect()` unconditionally drops the driver handle, `close()` is the public teardown that honours the `persistent`/`optimize` options, and `is_connected()` reports liveness. `reconnect()` is concrete on `AdapterABC` (`_disconnect()`, errors suppressed, then `_connect()`); `AsyncpgAdapter` overrides it to restart its loop thread first, since its `close()` tears the loop down too.
+- **`adapters/`** — Connection wrappers (`SQLiteAdapter`, `PsycopgAdapter`, `AsyncpgAdapter`, `MySQLAdapter`). Connection lifecycle is four methods: `_connect()` opens, `_disconnect()` unconditionally drops the driver handle, `close()` is the public teardown that honours the `persistent`/`optimize` options, and `is_connected()` reports liveness. All four are **per calling thread** except `close()`, which is global. `reconnect()` is concrete on `AdapterABC` (`_disconnect()`, errors suppressed, then `_connect()`); `AsyncpgAdapter` overrides it to restart its loop thread first, since its `close()` tears the loop down too.
 - **`query/`** — Fluent query builders (`SelectQuery`, `InsertQuery`, `UpdateQuery`, `DeleteQuery`, `CreateTableQuery`, `AlterTableQuery`, `DropTableQuery`). Mixins: `WhereMixin`, `HavingMixin`, `JoinsMixin`, etc.
 - **`result/`** — Result set abstraction (`Result`, `SQLite3Result`, `PsycopgResult`, `AsyncpgResult`, `MySQLResult`). Methods: `fetch_dict()`, `fetch_dicts()`, `scalar()`, `fetch_object()`, `fetch_objects()`, `columns()`.
 - **`migrations/`** — Schema migrations. Subclass `MigrationABC` (`up(db)`/`down(db)` abstract — the `DB` is passed in, not stored on the instance; `in_transaction()` returns `True` by default). `Migrator(db, migrations_dir, migrations_table="migrations")` drives them: `init()`, `up()`, `down()`, `create(name)`.
@@ -67,6 +67,21 @@ Within each package, modules named with a leading underscore (e.g. `flowmaticdb.
 - **`from __future__ import annotations`** — used in every file.
 - **`if TYPE_CHECKING`** — used for lazy imports in type stubs.
 
+## Threading
+
+A `DB`/adapter is shared between threads; a **connection is not**.
+
+- `flowmaticdb/_threading.py` (private) holds `ThreadLocalStore[T]` — one value per thread, keyed by the `threading.Thread` object (not `ident`, which is recycled), with `current()`/`require()`/`set()`/`discard()`/`values()`/`take_all()`/`take_orphaned()`/`count()`.
+- Every adapter keeps `self._connections: ThreadLocalStore[<driver connection>]` and exposes `_connection` as a **property**: returns the calling thread's handle, else prunes finished threads' handles and calls `_connect()`. `_connect()` binds the handle to the store *before* running the startup queries, since those go back through `exec()`.
+- `AdapterABC._closed` + `_ensure_not_closed()` stop a post-`close()` query from silently opening a fresh connection; `_connect()` clears the flag, so `reconnect()` revives a closed adapter. `close()` skips the flag on the `persistent` path (it deliberately leaves handles open).
+- `AdapterABC.connection_count()` is concrete (`1 if is_connected() else 0`) and overridden per adapter with `self._connections.count()` — deliberately not abstract, so existing `AdapterABC` subclasses keep working.
+- `DatabaseABC._savepoints` is a property over a per-thread `ThreadLocalStore[list[str]]`; mutate it with `.clear()`, never reassign.
+- `SQLiteAdapter` is the exception: `_is_memory_database()` (`:memory:`, `""`, or a `file:…mode=memory` URI) puts the store in `shared_across_threads` mode, since a second connection would be a second empty database. It then serializes statements through `self._statement_lock` (an `RLock`; a `nullcontext()` for file databases, which need no lock) and keeps `check_same_thread=False`. `sqlite3.connect()` is now called with `uri=True` for `file:`-prefixed names.
+- `MySQLAdapter._cursors` is a second store — an unread cursor belongs to one connection, so `_drain_cursor()` is per thread too.
+- `AsyncpgAdapter` shares its event loop across threads (it only runs I/O) but not its connections. `_fetch()`/`_fetch_with_params()` take the connection as a **parameter**: reading `self._connection` inside a coroutine would resolve it on the loop thread. `_ensure_loop()` (under `_loop_lock`) restarts the loop after `close()`.
+- Results are cursor-backed and stay bound to the thread that ran the query.
+- Tests: `tests/test_threading.py` (SQLite, no server), plus `test_postgres_psycopg_threaded_access` / `test_postgres_asyncpg_threaded_access` and `test_mysql_threaded_access` in the integration modules.
+
 ## Dialect quirks
 
 - `SQLDialect` properties like `bool`, `distinct_on`, `on_conflict`, `returning` are instance attributes (not abstract properties), set in `__init__`.
@@ -77,7 +92,7 @@ Within each package, modules named with a leading underscore (e.g. `flowmaticdb.
 
 ## Testing
 
-- **Testing**: 396 tests pass without any database (unit + SQLite in-memory integration). 2 pre-existing failures in `test_database_port.py`.
+- **Testing**: 412 tests pass without any database (unit + SQLite in-memory/file integration, including `test_threading.py`). 2 pre-existing failures in `test_database_port.py`.
 - **Unit tests** (no database): `test_dialect_*.py`, `test_*_query.py`, `test_conditions.py`, `test_joins.py`, `test_expressions.py`, `test_query_with_params.py`, `test_result_abstract.py`, `test_json_and_datetime_types.py`.
 - **Integration tests**: `test_integration_sqlite.py` uses SQLite `:memory:` — no external services needed. `test_integration_postgres.py` requires a PostgreSQL service on `localhost:5432` (skipped via `pytestmark` when unreachable; run `docker compose up -d postgres`). `test_integration_mysql.py` requires a MySQL service on `localhost:3306` with `MYSQL_ALLOW_EMPTY_PASSWORD=yes` (skipped via a session-scoped fixture when unreachable; the suite auto-creates the `flowmaticdb` database and drops all user tables between tests).
 - **Fixtures**: `conftest.py` provides `sql_dialect`, `sqlite_dialect`, `pg_dialect`, `mysql_dialect`. The postgres integration module defines its own `pg_adapter` / `pg_dialect` / `pg_db` yield fixtures. The mysql integration module defines `mysql_adapter` / `mysql_dialect` (the latter overrides the conftest one within that module) plus a session-scoped `_flowmaticdb_database` bootstrap fixture.
@@ -98,7 +113,7 @@ Within each package, modules named with a leading underscore (e.g. `flowmaticdb.
   - `PostgresqlDialect.cast_to_driver()` unwraps `PostgresArray` to a plain list (element types untouched, so the driver types them natively) and `cast_to_query()` renders it as `ARRAY[...]` (`'{}'` when empty) for `emulate_prepare`. `SQLDialect` unwraps it to JSON instead — engines with no array type drop the array reading rather than erroring, so a PostgreSQL-shaped query still runs on SQLite/MySQL.
   - `AsyncpgAdapter._open()` registers `json`/`jsonb` type codecs; `_cast_param()` leaves `dict`/`list`/`PostgresArray` native because whether a document has to be rendered depends on the placeholder type, which only `_adapt_param()` knows. There, a document is passed through for `_JSON_TYPE_OIDS` and `cast_json()`-rendered everywhere else — which is what makes a bare list bound to an array column fail loudly on asyncpg too, matching psycopg.
   - `MySQLResult` decodes columns the server reports as type code 245 (`json`); it tracks them by *position*, so duplicate column names in a join still decode correctly.
-  - `SQLiteAdapter._connect()` opens connections with `check_same_thread=False` unless the `check_same_thread` option says otherwise — deliberately unlike stock `sqlite3`, which would raise `ProgrammingError` whenever a threaded server opens a connection on one worker thread and closes it on another. Interleaving is still the caller's problem (see the SQLite section of `README.md`).
+  - `SQLiteAdapter._connect()` opens connections with `check_same_thread` defaulting to `not shared_across_threads` — i.e. stock `sqlite3` behaviour (`True`) for file databases, since each thread now has its own handle, and `False` only for in-memory ones, where the handle is shared by design. The option still overrides both. `close()` closes every thread's handle from the caller's thread, which the check rejects: the `contextlib.suppress(sqlite3.Error)` there is load-bearing, and dropping the last reference (`take_all()`) closes those handles at deallocation instead.
   - `SQLiteAdapter._connect()` calls the module-local `_register_types()` (idempotent, so it runs per connect rather than at import) and opens connections with `detect_types=sqlite3.PARSE_DECLTYPES`. Registration mutates the process-wide `sqlite3` registry — that is deliberate and commented. Params of type `datetime`/`date`/`dict`/`list` bypass `cast_to_driver()` (see the module-local `_cast_param()`) so the registered adapters serialize them at full ISO-8601 fidelity; the dialect's `datetime_format` drops microseconds.
 - **Fluent table reassignment** — use `.table("new_table")` instead of `.from_("new_table")` on `SelectQuery`, `DeleteQuery`, and `DropTableQuery`.
 - **Qualified column references** — pass columns/conditions as two-element lists (e.g. `["users", "id"]`) or wrap in `identifier(["users","id"])`. A dotted string like `"users.id"` is treated as a single identifier and escaped as `` `users.id` `` (non-existent column). Use `raw("...")` (a `SqlABC`) for raw JOIN clauses and aggregate expressions — `JoinsMixin.join()` ignores bare strings.

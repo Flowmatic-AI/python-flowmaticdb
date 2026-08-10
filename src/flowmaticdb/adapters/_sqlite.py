@@ -1,18 +1,24 @@
 from __future__ import annotations
 
+import contextlib
 import sqlite3
+import threading
 import time
 from collections.abc import Callable
+from contextlib import AbstractContextManager, nullcontext
 from datetime import date, datetime
 from typing import TYPE_CHECKING, Any
 
 from flowmaticdb._json import decode_json, encode_json
+from flowmaticdb._threading import ThreadLocalStore
 from flowmaticdb.adapters._base import AdapterABC
 from flowmaticdb.result import ResultABC, SQLite3Result
 
 if TYPE_CHECKING:
     from flowmaticdb._query_with_params import QueryWithParams
     from flowmaticdb.dialects import DialectABC
+
+_REGISTRY_LOCK = threading.Lock()
 
 
 def _adapt_datetime(value: datetime) -> str:
@@ -60,15 +66,23 @@ def _register_types() -> None:
     Registering is idempotent (each call overwrites the same registry entry),
     so it runs per connect instead of at import time.
     """
-    sqlite3.register_adapter(datetime, _adapt_datetime)
-    sqlite3.register_adapter(date, _adapt_date)
-    sqlite3.register_adapter(dict, _adapt_json)
-    sqlite3.register_adapter(list, _adapt_json)
-    sqlite3.register_converter("DATETIME", _convert_datetime)
-    sqlite3.register_converter("TIMESTAMP", _convert_datetime)
-    sqlite3.register_converter("DATE", _convert_date)
-    sqlite3.register_converter("JSON", _convert_json)
-    sqlite3.register_converter("JSONB", _convert_json)
+    with _REGISTRY_LOCK:
+        sqlite3.register_adapter(datetime, _adapt_datetime)
+        sqlite3.register_adapter(date, _adapt_date)
+        sqlite3.register_adapter(dict, _adapt_json)
+        sqlite3.register_adapter(list, _adapt_json)
+        sqlite3.register_converter("DATETIME", _convert_datetime)
+        sqlite3.register_converter("TIMESTAMP", _convert_datetime)
+        sqlite3.register_converter("DATE", _convert_date)
+        sqlite3.register_converter("JSON", _convert_json)
+        sqlite3.register_converter("JSONB", _convert_json)
+
+
+def _is_memory_database(database_name: str) -> bool:
+    if database_name in ("", ":memory:"):
+        return True
+
+    return database_name.startswith("file:") and "mode=memory" in database_name
 
 
 def _cast_param(dialect: DialectABC, value: Any) -> Any:
@@ -94,19 +108,43 @@ class SQLiteAdapter(AdapterABC):
             options=options,
             debug_callback=debug_callback,
         )
-        self._connection: sqlite3.Connection
+        shared = _is_memory_database(database_name)
+        self._connections: ThreadLocalStore[sqlite3.Connection] = ThreadLocalStore(shared_across_threads=shared)
+        self._statement_lock: AbstractContextManager[Any] = threading.RLock() if shared else nullcontext()
         self._connect()
+
+    @property
+    def _connection(self) -> sqlite3.Connection:
+        connection = self._connections.current()
+        if connection is not None:
+            return connection
+
+        self._ensure_not_closed()
+        self._close_orphaned_connections()
+        self._connect()
+        return self._connections.require()
+
+    def _close_orphaned_connections(self) -> None:
+        for connection in self._connections.take_orphaned():
+            with contextlib.suppress(sqlite3.Error):
+                connection.close()
+
+    def connection_count(self) -> int:
+        return self._connections.count()
 
     def _connect(self) -> None:
         _register_types()
 
         db_name = self._database_name
         read_only = self._options.get("read_only", False)
-        check_same_thread = self._options.get("check_same_thread", False)
+        check_same_thread = self._options.get(
+            "check_same_thread",
+            not self._connections.shared_across_threads,
+        )
 
         if read_only:
             uri = f"file:{db_name}?mode=ro"
-            self._connection = sqlite3.connect(
+            connection = sqlite3.connect(
                 uri,
                 uri=True,
                 isolation_level=None,
@@ -114,59 +152,70 @@ class SQLiteAdapter(AdapterABC):
                 check_same_thread=check_same_thread,
             )
         else:
-            self._connection = sqlite3.connect(
+            connection = sqlite3.connect(
                 db_name,
+                uri=db_name.startswith("file:"),
                 isolation_level=None,
                 detect_types=sqlite3.PARSE_DECLTYPES,
                 check_same_thread=check_same_thread,
             )
 
-        self._connection.row_factory = sqlite3.Row
+        connection.row_factory = sqlite3.Row
 
         if "encryption_key" in self._options:
-            self._connection.execute(f"PRAGMA key = '{self._options['encryption_key']}'")
+            connection.execute(f"PRAGMA key = '{self._options['encryption_key']}'")
 
         if "busy_timeout" in self._options:
-            self._connection.execute(f"PRAGMA busy_timeout = {int(self._options['busy_timeout'])}")
+            connection.execute(f"PRAGMA busy_timeout = {int(self._options['busy_timeout'])}")
 
         if "encoding" in self._options:
-            self._connection.execute(f"PRAGMA encoding = '{self._options['encoding']}'")
+            connection.execute(f"PRAGMA encoding = '{self._options['encoding']}'")
 
         if "journal_mode" in self._options:
-            self._connection.execute(f"PRAGMA journal_mode = {self._options['journal_mode']}")
+            connection.execute(f"PRAGMA journal_mode = {self._options['journal_mode']}")
 
         if self._options.get("foreign_keys"):
-            self._connection.execute("PRAGMA foreign_keys = ON")
+            connection.execute("PRAGMA foreign_keys = ON")
 
         create_functions: dict[str, Any] = self._options.get("create_functions", {})
 
         if "REGEXP" not in create_functions:
-            self._connection.create_function("REGEXP", 2, _regexp_fn)
+            connection.create_function("REGEXP", 2, _regexp_fn)
 
         if "regexp_like" not in create_functions:
-            self._connection.create_function("regexp_like", -1, _regexp_like_fn)
+            connection.create_function("regexp_like", -1, _regexp_like_fn)
 
         for function_name, callback in create_functions.items():
-            self._connection.create_function(function_name, -1, callback)
+            connection.create_function(function_name, -1, callback)
+
+        self._connections.set(connection)
+        self._closed = False
 
         self._exec_startup_queries()
 
     def _disconnect(self) -> None:
-        self._connection.close()
+        connection = self._connections.discard()
+        if connection is not None:
+            connection.close()
 
     def is_connected(self) -> bool:
+        connection = self._connections.current()
+        if connection is None:
+            return False
+
         try:
             # Cheapest attribute that still goes through sqlite3's
             # closed-connection check; raises ProgrammingError once closed.
-            _ = self._connection.total_changes
+            _ = connection.total_changes
         except sqlite3.Error:
             return False
         return True
 
     def version(self) -> str:
         try:
-            cursor = self._connection.execute("SELECT sqlite_version()")
-            row = cursor.fetchone()
+            with self._statement_lock:
+                cursor = self._connection.execute("SELECT sqlite_version()")
+                row = cursor.fetchone()
             return str(row[0]) if row else "0"
         except sqlite3.Error:
             return "0"
@@ -175,7 +224,8 @@ class SQLiteAdapter(AdapterABC):
         start = time.time()
         error: str | None = None
         try:
-            self._connection.execute(query)
+            with self._statement_lock:
+                self._connection.execute(query)
         except sqlite3.Error as e:
             error = str(e)
             raise
@@ -187,7 +237,8 @@ class SQLiteAdapter(AdapterABC):
         start = time.time()
         error: str | None = None
         try:
-            cursor = self._connection.execute(query)
+            with self._statement_lock:
+                cursor = self._connection.execute(query)
             return SQLite3Result(cursor)
         except sqlite3.Error as e:
             error = str(e)
@@ -209,11 +260,12 @@ class SQLiteAdapter(AdapterABC):
         start = time.time()
         error: str | None = None
         try:
-            if emulate_prepare:
-                sql_full = query_with_params.to_sql(dialect)
-                cursor = self._connection.execute(sql_full)
-            else:
-                cursor = self._connection.execute(sql, params)
+            with self._statement_lock:
+                if emulate_prepare:
+                    sql_full = query_with_params.to_sql(dialect)
+                    cursor = self._connection.execute(sql_full)
+                else:
+                    cursor = self._connection.execute(sql, params)
             return SQLite3Result(cursor)
         except sqlite3.Error as e:
             error = str(e)
@@ -227,22 +279,35 @@ class SQLiteAdapter(AdapterABC):
         return self._connection.in_transaction
 
     def last_insert_id(self, name: str | None = None) -> int | str | None:
-        cursor = self._connection.execute("SELECT last_insert_rowid()")
-        row = cursor.fetchone()
+        with self._statement_lock:
+            cursor = self._connection.execute("SELECT last_insert_rowid()")
+            row = cursor.fetchone()
         return row[0] if row else None
 
     def get_connection(self) -> Any:
         return self._connection
 
     def close(self) -> None:
-        if self._options.get("optimize", False):
-            try:
-                self._connection.execute("PRAGMA optimize")
-            except sqlite3.Error:
-                pass
+        optimize = self._options.get("optimize", False)
+        persistent = self._options.get("persistent", False)
 
-        if not self._options.get("persistent", False):
-            self._disconnect()
+        if not optimize and persistent:
+            return
+
+        with self._statement_lock:
+            connections = self._connections.values() if persistent else self._connections.take_all()
+
+            for connection in connections:
+                if optimize:
+                    with contextlib.suppress(sqlite3.Error):
+                        connection.execute("PRAGMA optimize")
+
+                if not persistent:
+                    with contextlib.suppress(sqlite3.Error):
+                        connection.close()
+
+        if not persistent:
+            self._closed = True
 
 
 def _regexp_fn(pattern: str, value: str) -> int:

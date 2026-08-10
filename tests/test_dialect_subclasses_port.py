@@ -73,6 +73,15 @@ def test_pg_identity_column_falls_back_to_serial_before_pg17() -> None:
     assert bigint_col == '"id" bigserial'
 
 
+def test_pg_serial_column_drops_default() -> None:
+    """SERIAL expands to a nextval() default of its own, so carrying the
+    caller's default through would produce "multiple default values specified
+    for column"."""
+    pg = PostgresqlDialect(version="16")
+    col = pg._build_column(Column(name="id", type="INTEGER", auto_increment=True, default=5))
+    assert col == '"id" SERIAL'
+
+
 def test_pg_use_serials_option_forces_serial_even_on_pg17() -> None:
     pg = PostgresqlDialect(version="17", options={"use_serials": True})
     col_def = pg._build_column(Column(name="id", type="INTEGER", auto_increment=True))

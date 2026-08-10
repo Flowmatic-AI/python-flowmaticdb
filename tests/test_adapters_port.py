@@ -14,10 +14,18 @@ from typing import Any
 
 import pytest
 
+from flowmaticdb._threading import ThreadLocalStore
 from flowmaticdb.adapters import AdapterABC, SQLiteAdapter
 from flowmaticdb.database import Database, DatabaseABC
 from flowmaticdb.dialects import MySQLDialect, PostgresqlDialect, SQLiteDialect
 from flowmaticdb.result import Result, ResultABC
+
+
+def _bind_fake_connection(adapter: Any, connection: Any) -> None:
+    store: ThreadLocalStore[Any] = ThreadLocalStore()
+    store.set(connection)
+    adapter._connections = store
+    adapter._closed = False
 
 
 def test_sqlite_adapter_has_close() -> None:
@@ -340,7 +348,7 @@ def test_sqlite_journal_mode_left_alone_by_default() -> None:
     adapter.close()
 
 
-def test_sqlite_connection_usable_from_another_thread_by_default() -> None:
+def test_sqlite_memory_connection_usable_from_another_thread() -> None:
     adapter = SQLiteAdapter(database_name=":memory:")
     results: list[Any] = []
 
@@ -359,7 +367,7 @@ def test_sqlite_connection_usable_from_another_thread_by_default() -> None:
     adapter.close()
 
 
-def test_sqlite_same_thread_check_can_be_re_enabled() -> None:
+def test_sqlite_memory_same_thread_check_can_be_forced_on() -> None:
     adapter = SQLiteAdapter(database_name=":memory:", options={"check_same_thread": True})
     errors: list[Exception] = []
 
@@ -475,8 +483,8 @@ def test_mysql_adapter_version_uses_a_cursor(monkeypatch: pytest.MonkeyPatch) ->
     from flowmaticdb.adapters import MySQLAdapter
 
     adapter = MySQLAdapter.__new__(MySQLAdapter)
-    adapter._connection = _FakeMySQLConnection(("8.0.32",))
-    adapter._current_cursor = None
+    _bind_fake_connection(adapter, _FakeMySQLConnection(("8.0.32",)))
+    adapter._cursors = ThreadLocalStore()
 
     assert adapter.version() == "8.0.32"
 
@@ -502,13 +510,13 @@ def test_psycopg_adapter_in_transaction_reflects_real_state() -> None:
 
     adapter = PsycopgAdapter.__new__(PsycopgAdapter)
 
-    adapter._connection = _FakeConnection(TransactionStatus.IDLE)
+    _bind_fake_connection(adapter, _FakeConnection(TransactionStatus.IDLE))
     assert adapter.in_transaction is False
 
-    adapter._connection = _FakeConnection(TransactionStatus.INTRANS)
+    _bind_fake_connection(adapter, _FakeConnection(TransactionStatus.INTRANS))
     assert adapter.in_transaction is True
 
-    adapter._connection = _FakeConnection(TransactionStatus.IDLE, autocommit=False)
+    _bind_fake_connection(adapter, _FakeConnection(TransactionStatus.IDLE, autocommit=False))
     assert adapter.in_transaction is False
 
 
@@ -548,7 +556,7 @@ def test_psycopg_begin_transaction_emits_dialect_sql() -> None:
     adapter = PsycopgAdapter.__new__(PsycopgAdapter)
     adapter._debug_callback = None
     connection = _RecordingConnection()
-    adapter._connection = connection
+    _bind_fake_connection(adapter, connection)
 
     adapter.begin_transaction("BEGIN TRANSACTION")
 

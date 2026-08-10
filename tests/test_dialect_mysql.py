@@ -5,6 +5,7 @@ from flowmaticdb.dialects import MySQLDialect
 from flowmaticdb.query import Condition, OnConflict
 from flowmaticdb.query.ddl import AddColumn, Column, DropConstraint, RenameColumn
 from flowmaticdb.query.enums import ConditionEnum, TypeEnum
+from flowmaticdb.query.expressions import CurrentTimestamp
 
 
 def test_mysql_select(mysql_dialect: MySQLDialect) -> None:
@@ -247,6 +248,33 @@ def test_mysql_type_datetime_clamps_fractional_seconds_precision(mysql_dialect: 
     assert mysql_dialect.type(TypeEnum.DATETIME, 64) == "DATETIME(6)"
 
 
+def test_mysql_current_timestamp_default_matches_column_precision(
+    mysql_dialect: MySQLDialect,
+) -> None:
+    """Reviewed deviation from MySQLDialect.php: MySQL rejects a bare
+    DEFAULT CURRENT_TIMESTAMP (and its synonym NOW()) on a DATETIME/TIMESTAMP
+    column with a fractional seconds part -- `DATETIME(6) DEFAULT
+    CURRENT_TIMESTAMP` raises error 1067 "Invalid default value". The default's
+    fsp is matched to the column's instead."""
+    col = Column(name="updated_at", type=TypeEnum.DATETIME, bits=6, default=CurrentTimestamp())
+    assert mysql_dialect._build_column(col) == "`updated_at` DATETIME(6) DEFAULT CURRENT_TIMESTAMP(6)"
+
+    col = Column(name="updated_at", type="TIMESTAMP(3)", default=CurrentTimestamp())
+    assert mysql_dialect._build_column(col) == "`updated_at` TIMESTAMP(3) DEFAULT CURRENT_TIMESTAMP(3)"
+
+
+def test_mysql_current_timestamp_default_left_alone_without_precision(
+    mysql_dialect: MySQLDialect,
+) -> None:
+    """A column with no fsp takes the bare form -- CURRENT_TIMESTAMP(0) is
+    legal but needlessly noisy, and the PHP output is what callers expect."""
+    col = Column(name="created_at", type=TypeEnum.DATETIME, default=CurrentTimestamp())
+    assert mysql_dialect._build_column(col) == "`created_at` DATETIME DEFAULT CURRENT_TIMESTAMP"
+
+    col = Column(name="created_at", type=TypeEnum.STRING, bits=6, default=CurrentTimestamp())
+    assert mysql_dialect._build_column(col) == "`created_at` VARCHAR(6) DEFAULT CURRENT_TIMESTAMP"
+
+
 def test_mysql_bool_casting(mysql_dialect: MySQLDialect) -> None:
     """PHP doesn't override castBool/parseBool for MySQL at all -- these all
     come from the base implementation."""
@@ -282,6 +310,13 @@ def test_mysql_auto_increment_column_not_null_and_default_preserved(
     col = Column(name="id", type=TypeEnum.INT, auto_increment=True, not_null=True)
     col_def: str = mysql_dialect._build_column(col)
     assert col_def == "`id` INTEGER NOT NULL AUTO_INCREMENT"
+
+
+def test_mysql_auto_increment_column_drops_default(mysql_dialect: MySQLDialect) -> None:
+    """MySQL rejects a DEFAULT on an AUTO_INCREMENT column with error 1067, so
+    the base builder drops it."""
+    col = Column(name="id", type=TypeEnum.INT, auto_increment=True, not_null=True, default=5)
+    assert mysql_dialect._build_column(col) == "`id` INTEGER NOT NULL AUTO_INCREMENT"
 
 
 def test_mysql_create_table_auto_increment_adds_primary_key(

@@ -1100,3 +1100,57 @@ def test_mysql_datetime_and_json_columns(
     result = adapter.query("SELECT `seen` FROM `docs`")
     assert result.columns() == {"seen": "timestamp"}
     assert result.scalar() == happened_at
+
+
+def test_mysql_threaded_access(_flowmaticdb_database: None) -> None:
+    import threading
+    from concurrent.futures import ThreadPoolExecutor
+
+    db = DB.connect_mysql(
+        MYSQL_DATABASE,
+        host=MYSQL_HOST,
+        port=MYSQL_PORT,
+        user=MYSQL_USER,
+        password=MYSQL_PASSWORD,
+    )
+
+    db.exec("DROP TABLE IF EXISTS `threaded`")
+    db.exec("CREATE TABLE `threaded` (val INTEGER)")
+
+    idents: set[int] = set()
+    lock = threading.Lock()
+
+    def _insert(value: int) -> None:
+        db.insert("threaded").values({"val": value}).execute()
+        row = db.select("threaded").where_equals("val", value).execute().fetch_dict()
+        assert row is not None
+        assert row["val"] == value
+        with lock:
+            idents.add(threading.get_ident())
+
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        list(pool.map(_insert, range(40)))
+
+    rows = db.select("threaded").execute().fetch_dicts()
+    assert sorted(row["val"] for row in rows) == list(range(40))
+    assert db.adapter.connection_count() == len(idents) + 1
+
+    opened = threading.Event()
+    release = threading.Event()
+
+    def _holder() -> None:
+        db.begin_transaction()
+        opened.set()
+        release.wait(timeout=10)
+        db.rollback_transaction()
+
+    holder = threading.Thread(target=_holder)
+    holder.start()
+    opened.wait(timeout=10)
+    assert db.in_transaction is False
+    release.set()
+    holder.join()
+
+    db.exec("DROP TABLE `threaded`")
+    db.close()
+    assert db.adapter.connection_count() == 0

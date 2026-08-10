@@ -112,7 +112,7 @@ class PostgresqlDialect(SQLDialect):
         else:
             serial_type = sql_type
 
-        serial_col = dataclasses.replace(col, type=serial_type, auto_increment=False)
+        serial_col = dataclasses.replace(col, type=serial_type, auto_increment=False, default=None)
         return super()._build_column(serial_col)
 
     def cast_to_query(self, value: Any) -> str:

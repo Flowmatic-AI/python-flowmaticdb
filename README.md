@@ -96,19 +96,24 @@ db = DB.connect_sqlite("mydb.db", options={
 })
 ```
 
-Connections are opened with `sqlite3`'s same-thread check **disabled**, so a
-connection may be opened on one thread and used or closed on another — the
-pattern threaded web servers (e.g. FastAPI's `def` endpoints on its worker
-thread pool) fall into by default. Pass `options={"check_same_thread": True}` to
-restore `sqlite3`'s stock behaviour of raising
-`sqlite3.ProgrammingError` on cross-thread use.
+Connections are opened with `sqlite3`'s same-thread check **enabled** — the
+stock behaviour. Each thread gets its own connection, so nothing needs to cross
+threads; handing a handle from `get_connection()` (or a `Result` reading from
+one) to another thread raises `sqlite3.ProgrammingError` instead of corrupting
+state silently. Pass `options={"check_same_thread": False}` to opt out.
 
-Dropping the check does not make one connection a substitute for a pool:
-statements from different threads interleave on the shared handle, so
-transactions, savepoints, and `last_insert_id()` are still connection-global.
-Give each thread (or request) its own `DB` when concurrent writes are in play,
-and consider `"journal_mode": "WAL"` plus a `"busy_timeout"` so the writers wait
-on each other instead of failing with `database is locked`.
+A file-backed database gives every thread its own connection (see
+[Threads and Concurrency](#threads-and-concurrency)), so concurrent writers are
+separate SQLite writers competing for the same file. Use
+`"journal_mode": "WAL"` plus a `"busy_timeout"` so they wait on each other
+instead of failing with `database is locked`.
+
+An **in-memory** database is the exception: it lives inside the connection that
+opened it, so a second connection would be a second, empty database. Threads
+therefore share the single handle (with the same-thread check off, since sharing
+is the point), statements are serialized through a lock, and transaction state is
+process-wide rather than per thread. Use a file (WAL is enough to keep it fast)
+when threads need real isolation.
 
 ### PostgreSQL
 
@@ -155,7 +160,9 @@ db.reconnect()                  # unconditionally drop and reopen
 
 A reconnect opens a completely fresh connection: the `startup_queries` and
 `options` given at connect time are reapplied, and any open transaction is gone
-(the savepoint bookkeeping is reset to match).
+(the savepoint bookkeeping is reset to match). All three act on the **calling
+thread's** connection only — other threads keep theirs and reconnect on their
+own when they find their own connection broken.
 
 ```python
 def handle_request(db):
@@ -171,6 +178,61 @@ after it fails. Two caveats:
   database only ever existed inside the dropped handle.
 - Inside an open transaction the PostgreSQL check falls back to the local
   connection status (no ping), so a transaction is never disturbed by it.
+
+### Threads and Concurrency
+
+A `DB` is safe to share between threads. Build one at startup and use it from
+every worker — a threaded server (FastAPI's `def` endpoints on its worker thread
+pool, Gunicorn/Uvicorn threads, a `ThreadPoolExecutor`) needs nothing else:
+
+```python
+db = DB.connect_postgresql("mydb", user="postgres")   # module level
+
+@app.get("/users")
+def list_users():                     # runs on a worker thread
+    return db.select("users").execute().fetch_dicts()
+
+@app.on_event("shutdown")
+def shutdown():
+    db.close()
+```
+
+Each thread gets its **own driver connection**, opened the first time that
+thread runs a query and reused for the rest of its life. That is what makes
+sharing safe: threads never interleave statements, cursors, or transaction state
+on one handle, so a `begin_transaction()` on one worker cannot swallow another
+worker's write.
+
+```python
+db.adapter.connection_count()   # live connections, across all threads
+```
+
+What follows from the model:
+
+- **Transactions, savepoints and `last_insert_id()` are per thread.** A
+  transaction belongs to the thread that opened it; other threads are unaffected
+  and see nothing of it until it commits.
+- **Connection count tracks thread count.** N worker threads means up to N server
+  connections, so keep the server's `max_connections` above your thread-pool
+  size. Connections belonging to finished threads are closed automatically when a
+  new thread opens one.
+- **`close()` is global, everything else is local.** `close()` is the shutdown
+  hook and closes every thread's connection; `reconnect()`, `is_connected()` and
+  `_disconnect()` act on the caller's connection alone. A query after `close()`
+  raises `AdapterError` rather than quietly opening a new connection —
+  `reconnect()` revives the adapter if you really want it back.
+- **Results belong to their thread.** A `ResultABC` reads from a live cursor on
+  the connection that ran the query. Consume it on the thread that created it and
+  pass rows (or `snapshot_result(result)`) to other threads, not the result
+  itself. On SQLite that rule is enforced: `sqlite3`'s same-thread check is on by
+  default again, so a stray cross-thread fetch raises instead of misbehaving.
+- **The query builders are per call and the dialect is immutable**, so neither
+  needs any care.
+
+Two engine-specific notes: SQLite `:memory:` cannot give threads separate
+connections and shares one instead (see [SQLite](#sqlite) above), and the
+`AsyncpgAdapter`'s private event loop is shared by all threads while its
+connections are not — asyncpg cannot run two queries on one connection at once.
 
 ### Debug Callback
 

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import re
 import threading
 import time
@@ -12,6 +13,7 @@ from typing import TYPE_CHECKING, Any, TypeVar
 from flowmaticdb import AdapterError
 from flowmaticdb._json import decode_json, encode_json
 from flowmaticdb._query_with_params import REGEX_PATTERN
+from flowmaticdb._threading import ThreadLocalStore
 from flowmaticdb.adapters._base import AdapterABC
 from flowmaticdb.query.expressions import PostgresArray
 from flowmaticdb.result import AsyncpgResult, PsycopgResult, ResultABC
@@ -113,8 +115,29 @@ class PsycopgAdapter(AdapterABC):
         self._port = port
         self._user = user
         self._password = password
-        self._connection: Connection[TupleRow]
+        self._connections: ThreadLocalStore[Connection[TupleRow]] = ThreadLocalStore()
         self._connect()
+
+    @property
+    def _connection(self) -> Connection[TupleRow]:
+        connection = self._connections.current()
+        if connection is not None:
+            return connection
+
+        self._ensure_not_closed()
+        self._close_orphaned_connections()
+        self._connect()
+        return self._connections.require()
+
+    def _close_orphaned_connections(self) -> None:
+        import psycopg
+
+        for connection in self._connections.take_orphaned():
+            with contextlib.suppress(psycopg.Error):
+                connection.close()
+
+    def connection_count(self) -> int:
+        return self._connections.count()
 
     def _connect(self) -> None:
         import psycopg
@@ -150,21 +173,25 @@ class PsycopgAdapter(AdapterABC):
         if search_path:
             connect_options["options"] = f"-c search_path={search_path}"
 
-        self._connection = psycopg.connect(**connect_options)
+        self._connections.set(psycopg.connect(**connect_options))
+        self._closed = False
 
         self._exec_startup_queries()
 
     def _disconnect(self) -> None:
-        self._connection.close()
+        connection = self._connections.discard()
+        if connection is not None:
+            connection.close()
 
     def is_connected(self) -> bool:
         import psycopg
 
-        if self._connection.closed:
+        connection = self._connections.current()
+        if connection is None or connection.closed:
             return False
 
         try:
-            self._connection.execute("SELECT 1")
+            connection.execute("SELECT 1")
         except psycopg.Error:
             return False
         return True
@@ -260,7 +287,13 @@ class PsycopgAdapter(AdapterABC):
         return self._connection
 
     def close(self) -> None:
-        self._disconnect()
+        import psycopg
+
+        for connection in self._connections.take_all():
+            with contextlib.suppress(psycopg.Error):
+                connection.close()
+
+        self._closed = True
 
 
 class AsyncpgAdapter(AdapterABC):
@@ -294,16 +327,41 @@ class AsyncpgAdapter(AdapterABC):
         self._port = port
         self._user = user
         self._password = password
+        self._loop_lock = threading.RLock()
         self._loop: asyncio.AbstractEventLoop
         self._loop_thread: threading.Thread
         self._start_loop()
-        self._connection: AsyncpgConnection
+        self._connections: ThreadLocalStore[AsyncpgConnection] = ThreadLocalStore()
         self._connect()
+
+    @property
+    def _connection(self) -> AsyncpgConnection:
+        connection = self._connections.current()
+        if connection is not None:
+            return connection
+
+        self._ensure_not_closed()
+        self._close_orphaned_connections()
+        self._connect()
+        return self._connections.require()
+
+    def _close_orphaned_connections(self) -> None:
+        for connection in self._connections.take_orphaned():
+            with contextlib.suppress(Exception):
+                self._await(connection.close())
+
+    def connection_count(self) -> int:
+        return self._connections.count()
 
     def _start_loop(self) -> None:
         self._loop = asyncio.new_event_loop()
         self._loop_thread = threading.Thread(target=self._run_loop, name="flowmaticdb-asyncpg", daemon=True)
         self._loop_thread.start()
+
+    def _ensure_loop(self) -> None:
+        with self._loop_lock:
+            if self._loop.is_closed():
+                self._start_loop()
 
     def _run_loop(self) -> None:
         asyncio.set_event_loop(self._loop)
@@ -346,6 +404,8 @@ class AsyncpgAdapter(AdapterABC):
             msg = "asyncpg always communicates in UTF-8; the client_encoding option is not supported"
             raise AdapterError(msg)
 
+        self._ensure_loop()
+
         connect_options: dict[str, Any] = {
             "host": self._host,
             "port": self._port,
@@ -362,7 +422,8 @@ class AsyncpgAdapter(AdapterABC):
         if search_path:
             connect_options["server_settings"] = {"search_path": search_path}
 
-        self._connection = self._await(self._open(connect_options))
+        self._connections.set(self._await(self._open(connect_options)))
+        self._closed = False
 
         self._exec_startup_queries()
 
@@ -383,29 +444,36 @@ class AsyncpgAdapter(AdapterABC):
         return connection
 
     def _disconnect(self) -> None:
-        if self._loop.is_closed():
+        connection = self._connections.discard()
+        if connection is None or self._loop.is_closed():
             return
-        self._await(self._connection.close())
+        self._await(connection.close())
 
     def is_connected(self) -> bool:
-        if self._loop.is_closed():
+        connection = self._connections.current()
+        if connection is None or self._loop.is_closed():
             return False
-        return not self._connection.is_closed()
+        return not connection.is_closed()
 
     def reconnect(self) -> None:
         # close() tears the loop down as well, so a reconnect after it has to
         # bring a new loop thread up before any coroutine can be awaited.
-        if self._loop.is_closed():
-            self._start_loop()
+        self._ensure_loop()
         super().reconnect()
 
-    async def _fetch(self, query: str) -> AsyncpgResult:
-        statement = await self._connection.prepare(query)
+    async def _fetch(self, connection: AsyncpgConnection, query: str) -> AsyncpgResult:
+        statement = await connection.prepare(query)
         records = await statement.fetch()
         return AsyncpgResult(statement.get_attributes(), records)
 
-    async def _fetch_with_params(self, dialect: DialectABC, query: str, params: list[Any]) -> AsyncpgResult:
-        statement = await self._connection.prepare(query)
+    async def _fetch_with_params(
+        self,
+        connection: AsyncpgConnection,
+        dialect: DialectABC,
+        query: str,
+        params: list[Any],
+    ) -> AsyncpgResult:
+        statement = await connection.prepare(query)
         adapted = _adapt_params(dialect, statement.get_parameters(), params)
         records = await statement.fetch(*adapted)
         return AsyncpgResult(statement.get_attributes(), records)
@@ -439,7 +507,7 @@ class AsyncpgAdapter(AdapterABC):
         start = time.time()
         error: str | None = None
         try:
-            return self._await(self._fetch(query))
+            return self._await(self._fetch(self._connection, query))
         except Exception as e:
             error = str(e)
             raise
@@ -459,9 +527,10 @@ class AsyncpgAdapter(AdapterABC):
         start = time.time()
         error: str | None = None
         try:
+            connection = self._connection
             if emulate_prepare:
-                return self._await(self._fetch(query_with_params.to_sql(dialect)))
-            return self._await(self._fetch_with_params(dialect, sql, params))
+                return self._await(self._fetch(connection, query_with_params.to_sql(dialect)))
+            return self._await(self._fetch_with_params(connection, dialect, sql, params))
         except Exception as e:
             error = str(e)
             raise
@@ -489,11 +558,16 @@ class AsyncpgAdapter(AdapterABC):
         return self._connection
 
     def close(self) -> None:
-        if self._loop.is_closed():
-            return
-        try:
-            self._disconnect()
-        finally:
-            self._loop.call_soon_threadsafe(self._loop.stop)
-            self._loop_thread.join()
-            self._loop.close()
+        with self._loop_lock:
+            if self._loop.is_closed():
+                return
+
+            try:
+                for connection in self._connections.take_all():
+                    with contextlib.suppress(Exception):
+                        self._await(connection.close())
+            finally:
+                self._closed = True
+                self._loop.call_soon_threadsafe(self._loop.stop)
+                self._loop_thread.join()
+                self._loop.close()

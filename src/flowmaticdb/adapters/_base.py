@@ -5,6 +5,7 @@ from abc import ABC, abstractmethod
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
 
+from flowmaticdb._exceptions import AdapterError
 from flowmaticdb.result import ResultABC
 
 if TYPE_CHECKING:
@@ -26,6 +27,7 @@ class AdapterABC(ABC):
         self._startup_queries = startup_queries or []
         self._options = options or {}
         self._debug_callback = debug_callback
+        self._closed = False
 
     def _exec_startup_queries(self) -> None:
         for query in self._startup_queries:
@@ -34,6 +36,18 @@ class AdapterABC(ABC):
     def _debug(self, sql: str, duration: float, error: str | None = None) -> None:
         if self._debug_callback is not None:
             self._debug_callback(sql, duration, error)
+
+    def _ensure_not_closed(self) -> None:
+        if self._closed:
+            msg = "this adapter is closed; call reconnect() to open a new connection"
+            raise AdapterError(msg)
+
+    @property
+    def closed(self) -> bool:
+        return self._closed
+
+    def connection_count(self) -> int:
+        return 1 if self.is_connected() else 0
 
     @property
     def driver_name(self) -> str:
@@ -66,6 +80,7 @@ class AdapterABC(ABC):
         with contextlib.suppress(Exception):
             self._disconnect()
 
+        self._closed = False
         self._connect()
 
     @abstractmethod

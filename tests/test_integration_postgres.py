@@ -1101,3 +1101,74 @@ def test_asyncpg_datetime_and_json_columns(asyncpg_db: DB) -> None:
     assert row["rendered"] == '{"kind": "signup", "tags": ["a", "b"], "meta": {"ok": true, "n": 3}}'
 
     _drop(adapter, "asyncpg_doc")
+
+
+def _threaded_workload(db: DB, table: str) -> None:
+    import threading
+    from concurrent.futures import ThreadPoolExecutor
+
+    db.exec(f'DROP TABLE IF EXISTS "{table}"')
+    db.exec(f'CREATE TABLE "{table}" (val INTEGER)')
+
+    idents: set[int] = set()
+    lock = threading.Lock()
+
+    def _insert(value: int) -> None:
+        db.insert(table).values({"val": value}).execute()
+        row = db.select(table).where_equals("val", value).execute().fetch_dict()
+        assert row is not None
+        assert row["val"] == value
+        with lock:
+            idents.add(threading.get_ident())
+
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        list(pool.map(_insert, range(40)))
+
+    rows = db.select(table).execute().fetch_dicts()
+    assert sorted(row["val"] for row in rows) == list(range(40))
+    assert db.adapter.connection_count() == len(idents) + 1
+
+    opened = threading.Event()
+    release = threading.Event()
+
+    def _holder() -> None:
+        db.begin_transaction()
+        opened.set()
+        release.wait(timeout=10)
+        db.rollback_transaction()
+
+    holder = threading.Thread(target=_holder)
+    holder.start()
+    opened.wait(timeout=10)
+    assert db.in_transaction is False
+    release.set()
+    holder.join()
+
+    db.exec(f'DROP TABLE "{table}"')
+    db.close()
+    assert db.adapter.connection_count() == 0
+
+
+def test_postgres_psycopg_threaded_access() -> None:
+    db = DB.connect_postgresql(
+        PG_DBNAME,
+        host=PG_HOST,
+        port=PG_PORT,
+        user=PG_USER,
+        password=PG_PASSWORD,
+        asyncpg_adapter=False,
+    )
+    _threaded_workload(db, "threaded_psycopg")
+
+
+def test_postgres_asyncpg_threaded_access() -> None:
+    pytest.importorskip("asyncpg")
+    db = DB.connect_postgresql(
+        PG_DBNAME,
+        host=PG_HOST,
+        port=PG_PORT,
+        user=PG_USER,
+        password=PG_PASSWORD,
+        asyncpg_adapter=True,
+    )
+    _threaded_workload(db, "threaded_asyncpg")

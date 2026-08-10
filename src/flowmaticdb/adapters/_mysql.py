@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import contextlib
 import time
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
 
 from flowmaticdb._exceptions import AdapterError
+from flowmaticdb._threading import ThreadLocalStore
 from flowmaticdb.adapters._base import AdapterABC
 from flowmaticdb.result import MySQLResult, ResultABC
 
@@ -39,16 +41,37 @@ class MySQLAdapter(AdapterABC):
         self._port = port
         self._user = user
         self._password = password
-        self._connection: MySQLConnectionAbstract
-        self._current_cursor: MySQLCursorAbstract | None = None
+        self._connections: ThreadLocalStore[MySQLConnectionAbstract] = ThreadLocalStore()
+        self._cursors: ThreadLocalStore[MySQLCursorAbstract] = ThreadLocalStore()
         self._connect()
+
+    @property
+    def _connection(self) -> MySQLConnectionAbstract:
+        connection = self._connections.current()
+        if connection is not None:
+            return connection
+
+        self._ensure_not_closed()
+        self._close_orphaned_connections()
+        self._connect()
+        return self._connections.require()
+
+    def _close_orphaned_connections(self) -> None:
+        import mysql.connector
+
+        for connection in self._connections.take_orphaned():
+            with contextlib.suppress(mysql.connector.Error):
+                connection.close()
+
+    def connection_count(self) -> int:
+        return self._connections.count()
 
     def _connect(self) -> None:
         import mysql.connector
         from mysql.connector.pooling import PooledMySQLConnection
 
         # A cursor from a previous connection cannot be drained on the new one.
-        self._current_cursor = None
+        self._cursors.discard()
 
         connect_options: dict[str, Any] = {
             "host": self._host,
@@ -73,7 +96,9 @@ class MySQLAdapter(AdapterABC):
         connection = mysql.connector.connect(**connect_options)
         if isinstance(connection, PooledMySQLConnection):
             raise AdapterError("pooled MySQL connections are not supported")
-        self._connection = connection
+
+        self._connections.set(connection)
+        self._closed = False
 
         if "charset" in self._options:
             collation = self._options.get("collation")
@@ -88,20 +113,25 @@ class MySQLAdapter(AdapterABC):
         self._exec_startup_queries()
 
     def _disconnect(self) -> None:
-        self._connection.close()
+        self._cursors.discard()
+        connection = self._connections.discard()
+        if connection is not None:
+            connection.close()
 
     def is_connected(self) -> bool:
-        return self._connection.is_connected()
+        connection = self._connections.current()
+        if connection is None:
+            return False
+
+        return connection.is_connected()
 
     def _drain_cursor(self) -> None:
-        if self._current_cursor is not None:
+        cursor = self._cursors.discard()
+        if cursor is not None:
             import mysql.connector
 
-            try:
-                self._current_cursor.fetchall()
-            except mysql.connector.Error:
-                pass
-            self._current_cursor = None
+            with contextlib.suppress(mysql.connector.Error):
+                cursor.fetchall()
 
     @staticmethod
     def _first_column(row: RowType | dict[str, RowItemType]) -> RowItemType:
@@ -144,7 +174,7 @@ class MySQLAdapter(AdapterABC):
             self._drain_cursor()
             cursor = self._connection.cursor()
             cursor.execute(query)
-            self._current_cursor = cursor
+            self._cursors.set(cursor)
             return MySQLResult(cursor)
         except Exception as e:
             error = str(e)
@@ -174,7 +204,7 @@ class MySQLAdapter(AdapterABC):
             else:
                 cursor = self._connection.cursor()
                 cursor.execute(sql, params)
-            self._current_cursor = cursor
+            self._cursors.set(cursor)
             return MySQLResult(cursor)
         except Exception as e:
             error = str(e)
@@ -205,5 +235,15 @@ class MySQLAdapter(AdapterABC):
         return self._connection
 
     def close(self) -> None:
-        if not self._options.get("persistent", False):
-            self._disconnect()
+        if self._options.get("persistent", False):
+            return
+
+        import mysql.connector
+
+        self._cursors.take_all()
+
+        for connection in self._connections.take_all():
+            with contextlib.suppress(mysql.connector.Error):
+                connection.close()
+
+        self._closed = True
