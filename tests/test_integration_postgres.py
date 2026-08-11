@@ -1181,3 +1181,75 @@ def test_postgres_asyncpg_threaded_access() -> None:
         asyncpg_adapter=True,
     )
     _threaded_workload(db, "threaded_asyncpg")
+
+
+def _capped_workload(db: DB, table: str) -> None:
+    """Eight short-lived threads against three slots, one of which this thread
+    already holds. Most have to queue, and each hands its slot on by exiting, so
+    this only finishes if slots are really recycled -- and the peak proves the
+    cap held while they did."""
+    import threading
+
+    assert db.adapter.max_concurrent_connections == 3
+
+    db.exec(f'DROP TABLE IF EXISTS "{table}"')
+    db.exec(f'CREATE TABLE "{table}" (val INTEGER)')
+
+    peak = 0
+    lock = threading.Lock()
+    done: list[int] = []
+
+    def _work(index: int) -> None:
+        nonlocal peak
+        for value in range(index * 5, index * 5 + 5):
+            db.insert(table).values({"val": value}).execute()
+            with lock:
+                peak = max(peak, db.adapter.connection_count())
+        with lock:
+            done.append(index)
+
+    threads = [threading.Thread(target=_work, args=(index,)) for index in range(8)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=60)
+        assert not thread.is_alive()
+
+    assert sorted(done) == list(range(8))
+    assert peak == 3
+
+    rows = db.select(table).execute().fetch_dicts()
+    assert sorted(row["val"] for row in rows) == list(range(40))
+
+    db.exec(f'DROP TABLE "{table}"')
+    db.close()
+    assert db.adapter.connection_count() == 0
+
+
+def test_postgres_psycopg_connection_limit() -> None:
+    db = DB.connect_postgresql(
+        PG_DBNAME,
+        host=PG_HOST,
+        port=PG_PORT,
+        user=PG_USER,
+        password=PG_PASSWORD,
+        asyncpg_adapter=False,
+        max_concurrent_connections=3,
+        acquire_connection_timeout=60.0,
+    )
+    _capped_workload(db, "capped_psycopg")
+
+
+def test_postgres_asyncpg_connection_limit() -> None:
+    pytest.importorskip("asyncpg")
+    db = DB.connect_postgresql(
+        PG_DBNAME,
+        host=PG_HOST,
+        port=PG_PORT,
+        user=PG_USER,
+        password=PG_PASSWORD,
+        asyncpg_adapter=True,
+        max_concurrent_connections=3,
+        acquire_connection_timeout=60.0,
+    )
+    _capped_workload(db, "capped_asyncpg")

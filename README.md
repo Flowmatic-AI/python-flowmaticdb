@@ -213,8 +213,10 @@ What follows from the model:
   transaction belongs to the thread that opened it; other threads are unaffected
   and see nothing of it until it commits.
 - **Connection count tracks thread count.** N worker threads means up to N server
-  connections, so keep the server's `max_connections` above your thread-pool
-  size. Connections belonging to finished threads are closed automatically when a
+  connections, so keep the server's own `max_connections` above your thread-pool
+  size, or cap this side with `max_concurrent_connections=` (see
+  [Limiting concurrent connections](#limiting-concurrent-connections)).
+  Connections belonging to finished threads are closed automatically when a
   new thread opens one.
 - **`close()` is global, everything else is local.** `close()` is the shutdown
   hook and closes every thread's connection; `reconnect()`, `is_connected()` and
@@ -233,6 +235,57 @@ Two engine-specific notes: SQLite `:memory:` cannot give threads separate
 connections and shares one instead (see [SQLite](#sqlite) above), and the
 `AsyncpgAdapter`'s private event loop is shared by all threads while its
 connections are not — asyncpg cannot run two queries on one connection at once.
+
+### Limiting Concurrent Connections
+
+By default a thread that needs a connection opens one, however many are already
+live. Every `connect_*` method takes `max_concurrent_connections` to cap that, and
+`acquire_connection_timeout` to bound how long a thread waits for its turn:
+
+```python
+db = DB.connect_postgresql(
+    "mydb",
+    user="postgres",
+    max_concurrent_connections=10,   # at most 10 live connections, across all threads
+    acquire_connection_timeout=5.0,  # give up after 5s of waiting
+)
+```
+
+A thread that needs a **new** connection while the cap is reached blocks until a
+slot frees, and slots are handed out in arrival order — first to wait is first
+served. A thread that already has a connection never waits; it just reuses its
+own, so a capped adapter cannot deadlock against itself.
+
+```python
+db.adapter.max_concurrent_connections  # 10
+db.adapter.connection_count()          # live connections right now, never above the cap
+```
+
+With no `acquire_connection_timeout` a thread waits indefinitely. Set one and a thread
+that waits too long raises `ConnectionLimitError` (a subclass of `AdapterError`,
+so existing handlers keep working) instead of hanging:
+
+```python
+from flowmaticdb import ConnectionLimitError
+
+try:
+    rows = db.select("users").execute().fetch_dicts()
+except ConnectionLimitError:
+    ...   # shed the request rather than pile up behind the cap
+```
+
+**A slot is held for the lifetime of the thread, not the query.** Connections are
+per thread (above), so a slot only comes free when its thread exits, is swept as
+finished, or `close()` runs — not when a query returns. Under a long-lived worker
+pool an idle worker still holds its slot, so `max_concurrent_connections` must be at least
+the number of workers that run queries concurrently or requests will queue behind
+threads that are doing nothing. Size it as a **safety ceiling against runaway
+thread growth**, not as a way to serve N workers from fewer than N connections:
+
+```python
+# FastAPI def endpoints run on AnyIO's worker pool (41 threads by default)
+db = DB.connect_postgresql("mydb", user="postgres", max_concurrent_connections=45)
+```
 
 ### Debug Callback
 

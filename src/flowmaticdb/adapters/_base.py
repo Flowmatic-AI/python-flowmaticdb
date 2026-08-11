@@ -21,12 +21,19 @@ class AdapterABC(ABC):
         startup_queries: list[str] | None = None,
         options: dict[str, Any] | None = None,
         debug_callback: Callable[[str, float, str | None], None] | None = None,
+        max_concurrent_connections: int | None = None,
+        acquire_connection_timeout: float | None = None,
     ) -> None:
+        if max_concurrent_connections is not None and max_concurrent_connections < 1:
+            raise AdapterError("max_concurrent_connections must be at least 1")
+
         self._driver_name = driver_name
         self._database_name = database_name
         self._startup_queries = startup_queries or []
         self._options = options or {}
         self._debug_callback = debug_callback
+        self._max_concurrent_connections = max_concurrent_connections
+        self._acquire_connection_timeout = acquire_connection_timeout
         self._closed = False
 
     def _exec_startup_queries(self) -> None:
@@ -47,6 +54,19 @@ class AdapterABC(ABC):
 
     def connection_count(self) -> int:
         return 1 if self.is_connected() else 0
+
+    @property
+    def max_concurrent_connections(self) -> int | None:
+        """Cap on live connections, or ``None`` when uncapped.
+
+        A thread past the cap waits in :meth:`ThreadLocalStore.reserve` until a
+        slot frees -- which happens when another thread exits, is swept as
+        orphaned, or the adapter is closed."""
+        return self._max_concurrent_connections
+
+    @property
+    def acquire_connection_timeout(self) -> float | None:
+        return self._acquire_connection_timeout
 
     @property
     def driver_name(self) -> str:

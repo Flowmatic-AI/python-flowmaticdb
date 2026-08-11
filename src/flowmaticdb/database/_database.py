@@ -15,6 +15,8 @@ class Database(DatabaseABC):
         options: dict[str, Any] | None = None,
         debug_callback: Callable[[str, float, str | None], None] | None = None,
         ensure_always_connected: bool = False,
+        max_concurrent_connections: int | None = None,
+        acquire_connection_timeout: float | None = None,
     ) -> Self:
         from flowmaticdb.adapters import SQLiteAdapter
         from flowmaticdb.dialects import SQLiteDialect
@@ -24,6 +26,8 @@ class Database(DatabaseABC):
             startup_queries=startup_queries,
             options=options,
             debug_callback=debug_callback,
+            max_concurrent_connections=max_concurrent_connections,
+            acquire_connection_timeout=acquire_connection_timeout,
         )
         return cls(adapter, SQLiteDialect(version=adapter.version(), options=options or {}), ensure_always_connected)
 
@@ -40,6 +44,8 @@ class Database(DatabaseABC):
         debug_callback: Callable[[str, float, str | None], None] | None = None,
         asyncpg_adapter: bool = True,
         ensure_always_connected: bool = False,
+        max_concurrent_connections: int | None = None,
+        acquire_connection_timeout: float | None = None,
     ) -> Self:
         from flowmaticdb.adapters import AdapterABC, AsyncpgAdapter, PsycopgAdapter
         from flowmaticdb.dialects import PostgresqlDialect
@@ -55,6 +61,8 @@ class Database(DatabaseABC):
                 startup_queries=startup_queries,
                 options=options,
                 debug_callback=debug_callback,
+                max_concurrent_connections=max_concurrent_connections,
+                acquire_connection_timeout=acquire_connection_timeout,
             )
         else:
             adapter = PsycopgAdapter(
@@ -66,6 +74,8 @@ class Database(DatabaseABC):
                 startup_queries=startup_queries,
                 options=options,
                 debug_callback=debug_callback,
+                max_concurrent_connections=max_concurrent_connections,
+                acquire_connection_timeout=acquire_connection_timeout,
             )
         return cls(adapter, PostgresqlDialect(version=adapter.version(), options=options or {}), ensure_always_connected)
 
@@ -82,6 +92,8 @@ class Database(DatabaseABC):
         debug_callback: Callable[[str, float, str | None], None] | None,
         is_mariadb: bool,
         ensure_always_connected: bool,
+        max_concurrent_connections: int | None,
+        acquire_connection_timeout: float | None,
     ) -> Self:
         from flowmaticdb.adapters import MySQLAdapter
         from flowmaticdb.dialects import MySQLDialect
@@ -95,6 +107,8 @@ class Database(DatabaseABC):
             startup_queries=startup_queries,
             options=options,
             debug_callback=debug_callback,
+            max_concurrent_connections=max_concurrent_connections,
+            acquire_connection_timeout=acquire_connection_timeout,
         )
         return cls(
             adapter,
@@ -114,6 +128,8 @@ class Database(DatabaseABC):
         options: dict[str, Any] | None = None,
         debug_callback: Callable[[str, float, str | None], None] | None = None,
         ensure_always_connected: bool = False,
+        max_concurrent_connections: int | None = None,
+        acquire_connection_timeout: float | None = None,
     ) -> Self:
         return cls._connect_mysql_family(
             name,
@@ -126,6 +142,8 @@ class Database(DatabaseABC):
             debug_callback,
             is_mariadb=False,
             ensure_always_connected=ensure_always_connected,
+            max_concurrent_connections=max_concurrent_connections,
+            acquire_connection_timeout=acquire_connection_timeout,
         )
 
     @classmethod
@@ -140,6 +158,8 @@ class Database(DatabaseABC):
         options: dict[str, Any] | None = None,
         debug_callback: Callable[[str, float, str | None], None] | None = None,
         ensure_always_connected: bool = False,
+        max_concurrent_connections: int | None = None,
+        acquire_connection_timeout: float | None = None,
     ) -> Self:
         return cls._connect_mysql_family(
             name,
@@ -152,6 +172,8 @@ class Database(DatabaseABC):
             debug_callback,
             is_mariadb=True,
             ensure_always_connected=ensure_always_connected,
+            max_concurrent_connections=max_concurrent_connections,
+            acquire_connection_timeout=acquire_connection_timeout,
         )
 
     @classmethod

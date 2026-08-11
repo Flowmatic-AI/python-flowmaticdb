@@ -29,6 +29,8 @@ class MySQLAdapter(AdapterABC):
         port: int = 3306,
         user: str = "root",
         password: str = "",
+        max_concurrent_connections: int | None = None,
+        acquire_connection_timeout: float | None = None,
     ) -> None:
         super().__init__(
             driver_name="mysql",
@@ -36,6 +38,8 @@ class MySQLAdapter(AdapterABC):
             startup_queries=startup_queries,
             options=options,
             debug_callback=debug_callback,
+            max_concurrent_connections=max_concurrent_connections,
+            acquire_connection_timeout=acquire_connection_timeout,
         )
         self._host = host
         self._port = port
@@ -43,6 +47,8 @@ class MySQLAdapter(AdapterABC):
         self._password = password
         self._connections: ThreadLocalStore[MySQLConnectionAbstract] = ThreadLocalStore(
             on_thread_exit=self._close_connection,
+            max_values=max_concurrent_connections,
+            acquire_timeout=acquire_connection_timeout,
         )
         self._cursors: ThreadLocalStore[MySQLCursorAbstract] = ThreadLocalStore(
             on_thread_exit=self._close_cursor,
@@ -80,11 +86,30 @@ class MySQLAdapter(AdapterABC):
         return self._connections.count()
 
     def _connect(self) -> None:
-        import mysql.connector
-        from mysql.connector.pooling import PooledMySQLConnection
-
         # A cursor from a previous connection cannot be drained on the new one.
         self._cursors.discard()
+
+        # The slot is claimed before the handle is opened -- opening first and
+        # counting after is exactly what the limit exists to prevent.
+        with self._connections.reserve():
+            self._connections.set(self._open_connection())
+            self._closed = False
+
+        if "charset" in self._options:
+            collation = self._options.get("collation")
+            names_sql = f"SET NAMES {self._options['charset']}"
+            if collation:
+                names_sql += f" COLLATE {collation}"
+            self.exec(names_sql)
+
+        if "engine" in self._options:
+            self.exec(f"SET SESSION default_storage_engine = {self._options['engine']}")
+
+        self._exec_startup_queries()
+
+    def _open_connection(self) -> MySQLConnectionAbstract:
+        import mysql.connector
+        from mysql.connector.pooling import PooledMySQLConnection
 
         connect_options: dict[str, Any] = {
             "host": self._host,
@@ -110,20 +135,7 @@ class MySQLAdapter(AdapterABC):
         if isinstance(connection, PooledMySQLConnection):
             raise AdapterError("pooled MySQL connections are not supported")
 
-        self._connections.set(connection)
-        self._closed = False
-
-        if "charset" in self._options:
-            collation = self._options.get("collation")
-            names_sql = f"SET NAMES {self._options['charset']}"
-            if collation:
-                names_sql += f" COLLATE {collation}"
-            self.exec(names_sql)
-
-        if "engine" in self._options:
-            self.exec(f"SET SESSION default_storage_engine = {self._options['engine']}")
-
-        self._exec_startup_queries()
+        return connection
 
     def _disconnect(self) -> None:
         self._cursors.discard()

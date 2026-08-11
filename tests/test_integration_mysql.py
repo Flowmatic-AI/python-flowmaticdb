@@ -1159,3 +1159,56 @@ def test_mysql_threaded_access(_flowmaticdb_database: None) -> None:
     db.exec("DROP TABLE `threaded`")
     db.close()
     assert db.adapter.connection_count() == 0
+
+
+def test_mysql_connection_limit(_flowmaticdb_database: None) -> None:
+    """Eight short-lived threads against three slots, one of which this thread
+    already holds. Most have to queue, and each hands its slot on by exiting, so
+    this only finishes if slots are really recycled -- and the peak proves the
+    cap held while they did."""
+    import threading
+
+    db = DB.connect_mysql(
+        MYSQL_DATABASE,
+        host=MYSQL_HOST,
+        port=MYSQL_PORT,
+        user=MYSQL_USER,
+        password=MYSQL_PASSWORD,
+        max_concurrent_connections=3,
+        acquire_connection_timeout=60.0,
+    )
+
+    assert db.adapter.max_concurrent_connections == 3
+
+    db.exec("DROP TABLE IF EXISTS `capped`")
+    db.exec("CREATE TABLE `capped` (val INTEGER)")
+
+    peak = 0
+    lock = threading.Lock()
+    done: list[int] = []
+
+    def _work(index: int) -> None:
+        nonlocal peak
+        for value in range(index * 5, index * 5 + 5):
+            db.insert("capped").values({"val": value}).execute()
+            with lock:
+                peak = max(peak, db.adapter.connection_count())
+        with lock:
+            done.append(index)
+
+    threads = [threading.Thread(target=_work, args=(index,)) for index in range(8)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=60)
+        assert not thread.is_alive()
+
+    assert sorted(done) == list(range(8))
+    assert peak == 3
+
+    rows = db.select("capped").execute().fetch_dicts()
+    assert sorted(row["val"] for row in rows) == list(range(40))
+
+    db.exec("DROP TABLE `capped`")
+    db.close()
+    assert db.adapter.connection_count() == 0

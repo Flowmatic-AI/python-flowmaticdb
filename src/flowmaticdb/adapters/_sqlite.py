@@ -113,6 +113,8 @@ class SQLiteAdapter(AdapterABC):
         startup_queries: list[str] | None = None,
         options: dict[str, Any] | None = None,
         debug_callback: Callable[[str, float, str | None], None] | None = None,
+        max_concurrent_connections: int | None = None,
+        acquire_connection_timeout: float | None = None,
     ) -> None:
         super().__init__(
             driver_name="sqlite",
@@ -120,11 +122,15 @@ class SQLiteAdapter(AdapterABC):
             startup_queries=startup_queries,
             options=options,
             debug_callback=debug_callback,
+            max_concurrent_connections=max_concurrent_connections,
+            acquire_connection_timeout=acquire_connection_timeout,
         )
         shared = _is_memory_database(database_name)
         self._connections: ThreadLocalStore[sqlite3.Connection] = ThreadLocalStore(
             shared_across_threads=shared,
             on_thread_exit=self._close_connection,
+            max_values=max_concurrent_connections,
+            acquire_timeout=acquire_connection_timeout,
         )
         self._statement_lock: AbstractContextManager[Any] = threading.RLock() if shared else nullcontext()
         self._connect()
@@ -154,6 +160,15 @@ class SQLiteAdapter(AdapterABC):
     def _connect(self) -> None:
         _register_types()
 
+        # The slot is claimed before the handle is opened -- opening first and
+        # counting after is exactly what the limit exists to prevent.
+        with self._connections.reserve():
+            self._connections.set(self._open_connection())
+            self._closed = False
+
+        self._exec_startup_queries()
+
+    def _open_connection(self) -> sqlite3.Connection:
         db_name = self._database_name
         read_only = self._options.get("read_only", False)
         check_same_thread = self._options.get(
@@ -182,12 +197,10 @@ class SQLiteAdapter(AdapterABC):
         connection.row_factory = sqlite3.Row
 
         connection.execute(f"PRAGMA journal_mode = {self._options.get("journal_mode", "WAL")}")
+        connection.execute(f"PRAGMA busy_timeout = {int(self._options.get("busy_timeout", 500))}")
 
         if "encryption_key" in self._options:
             connection.execute(f"PRAGMA key = '{self._options["encryption_key"]}'")
-
-        if "busy_timeout" in self._options:
-            connection.execute(f"PRAGMA busy_timeout = {int(self._options["busy_timeout"])}")
 
         if "encoding" in self._options:
             connection.execute(f"PRAGMA encoding = '{self._options["encoding"]}'")
@@ -206,10 +219,7 @@ class SQLiteAdapter(AdapterABC):
         for function_name, callback in create_functions.items():
             connection.create_function(function_name, -1, callback)
 
-        self._connections.set(connection)
-        self._closed = False
-
-        self._exec_startup_queries()
+        return connection
 
     def _disconnect(self) -> None:
         connection = self._connections.discard()

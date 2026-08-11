@@ -1,4 +1,11 @@
-from flowmaticdb._exceptions import AdapterError, DatabaseError, DriverError, QueryError, QueryWithParamsError
+from flowmaticdb._exceptions import (
+    AdapterError,
+    ConnectionLimitError,
+    DatabaseError,
+    DriverError,
+    QueryError,
+    QueryWithParamsError,
+)
 from flowmaticdb._helpers import (
     alias,
     current_timestamp,
@@ -15,6 +22,7 @@ from flowmaticdb.query.expressions import PostgresArray
 
 __all__ = [
     "AdapterError",
+    "ConnectionLimitError",
     "DatabaseError",
     "DriverError",
     "PostgresArray",

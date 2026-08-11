@@ -102,6 +102,8 @@ class PsycopgAdapter(AdapterABC):
         port: int = 5432,
         user: str = "postgres",
         password: str = "",
+        max_concurrent_connections: int | None = None,
+        acquire_connection_timeout: float | None = None,
     ) -> None:
         super().__init__(
             driver_name="postgresql",
@@ -109,6 +111,8 @@ class PsycopgAdapter(AdapterABC):
             startup_queries=startup_queries,
             options=options,
             debug_callback=debug_callback,
+            max_concurrent_connections=max_concurrent_connections,
+            acquire_connection_timeout=acquire_connection_timeout,
         )
         self._host = host
         self._port = port
@@ -116,6 +120,8 @@ class PsycopgAdapter(AdapterABC):
         self._password = password
         self._connections: ThreadLocalStore[Connection[TupleRow]] = ThreadLocalStore(
             on_thread_exit=self._close_connection,
+            max_values=max_concurrent_connections,
+            acquire_timeout=acquire_connection_timeout,
         )
         self._connect()
 
@@ -177,8 +183,11 @@ class PsycopgAdapter(AdapterABC):
         if search_path:
             connect_options["options"] = f"-c search_path={search_path}"
 
-        self._connections.set(psycopg.connect(**connect_options))
-        self._closed = False
+        # The slot is claimed before the handle is opened -- opening first and
+        # counting after is exactly what the limit exists to prevent.
+        with self._connections.reserve():
+            self._connections.set(psycopg.connect(**connect_options))
+            self._closed = False
 
         self._exec_startup_queries()
 
@@ -319,6 +328,8 @@ class AsyncpgAdapter(AdapterABC):
         port: int = 5432,
         user: str = "postgres",
         password: str = "",
+        max_concurrent_connections: int | None = None,
+        acquire_connection_timeout: float | None = None,
     ) -> None:
         super().__init__(
             driver_name="postgresql",
@@ -326,6 +337,8 @@ class AsyncpgAdapter(AdapterABC):
             startup_queries=startup_queries,
             options=options,
             debug_callback=debug_callback,
+            max_concurrent_connections=max_concurrent_connections,
+            acquire_connection_timeout=acquire_connection_timeout,
         )
         self._host = host
         self._port = port
@@ -337,6 +350,8 @@ class AsyncpgAdapter(AdapterABC):
         self._start_loop()
         self._connections: ThreadLocalStore[AsyncpgConnection] = ThreadLocalStore(
             on_thread_exit=self._close_connection,
+            max_values=max_concurrent_connections,
+            acquire_timeout=acquire_connection_timeout,
         )
         self._connect()
 
@@ -441,8 +456,11 @@ class AsyncpgAdapter(AdapterABC):
         if search_path:
             connect_options["server_settings"] = {"search_path": search_path}
 
-        self._connections.set(self._await(self._open(connect_options)))
-        self._closed = False
+        # The slot is claimed before the handle is opened -- opening first and
+        # counting after is exactly what the limit exists to prevent.
+        with self._connections.reserve():
+            self._connections.set(self._await(self._open(connect_options)))
+            self._closed = False
 
         self._exec_startup_queries()
 
