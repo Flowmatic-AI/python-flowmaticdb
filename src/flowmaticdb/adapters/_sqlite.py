@@ -181,19 +181,18 @@ class SQLiteAdapter(AdapterABC):
 
         connection.row_factory = sqlite3.Row
 
+        connection.execute(f"PRAGMA journal_mode = {self._options.get("journal_mode", "WAL")}")
+
         if "encryption_key" in self._options:
-            connection.execute(f"PRAGMA key = '{self._options['encryption_key']}'")
+            connection.execute(f"PRAGMA key = '{self._options["encryption_key"]}'")
 
         if "busy_timeout" in self._options:
-            connection.execute(f"PRAGMA busy_timeout = {int(self._options['busy_timeout'])}")
+            connection.execute(f"PRAGMA busy_timeout = {int(self._options["busy_timeout"])}")
 
         if "encoding" in self._options:
-            connection.execute(f"PRAGMA encoding = '{self._options['encoding']}'")
+            connection.execute(f"PRAGMA encoding = '{self._options["encoding"]}'")
 
-        if "journal_mode" in self._options:
-            connection.execute(f"PRAGMA journal_mode = {self._options['journal_mode']}")
-
-        if self._options.get("foreign_keys"):
+        if self._options.get("foreign_keys", True):
             connection.execute("PRAGMA foreign_keys = ON")
 
         create_functions: dict[str, Any] = self._options.get("create_functions", {})
