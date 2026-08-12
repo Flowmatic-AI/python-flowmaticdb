@@ -20,19 +20,25 @@ Coding agents work best if you give them a clear structure. In this case, having
 
 # flowmaticdb — Python Database Abstraction
 
-A multi-dialect database abstraction layer for Python, supporting **PostgreSQL**, **SQLite**, and **MySQL**. Ported from the PHP library `sentience/database`.
+A multi-dialect database abstraction layer for Python, supporting **PostgreSQL**, **SQLite**, **MySQL** and **MariaDB**. Ported from the PHP library `sentience/database`.
 
-flowmaticdb gives you a fluent query builder API, driver-level adapters, dialect-aware SQL generation, and a unified result abstraction — all with strict type hints and zero magic strings.
+flowmaticdb gives you a fluent query builder API, driver-level adapters, dialect-aware SQL generation, a unified result abstraction and a schema migration runner — all with strict type hints and zero magic strings.
 
 ---
 
 ## Quick Start
 
 ```bash
-pip install flowmaticdb
-# Or with dev dependencies:
-pip install "flowmaticdb[dev]"
+pip install flowmaticdb                 # SQLite works out of the box
+pip install "flowmaticdb[postgres]"     # PostgreSQL via psycopg
+pip install "flowmaticdb[asyncpg]"      # PostgreSQL via asyncpg (the default driver)
+pip install "flowmaticdb[mysql]"        # MySQL and MariaDB
+pip install "flowmaticdb[all]"          # every driver
+pip install "flowmaticdb[dev]"          # pytest, mypy, ruff
 ```
+
+The package itself has **no dependencies** — a driver extra is only needed for a
+server database, since `sqlite3` ships with Python.
 
 ```python
 from flowmaticdb.database import DB
@@ -68,8 +74,14 @@ count = result.scalar()      # First column of first row
 | Database | Connection Method | Adapter | Dialect | Required Driver |
 |----------|-------------------|---------|---------|----------------|
 | SQLite   | `DB.connect_sqlite()` | `SQLiteAdapter` | `SQLiteDialect` | Built-in (`sqlite3`) |
-| PostgreSQL | `DB.connect_postgresql()` | `PsycopgAdapter` | `PostgresqlDialect` | `psycopg[binary]>=3.1` |
+| PostgreSQL | `DB.connect_postgresql()` | `AsyncpgAdapter` (default) or `PsycopgAdapter` | `PostgresqlDialect` | `asyncpg>=0.29` or `psycopg[binary]>=3.1` |
 | MySQL   | `DB.connect_mysql()` | `MySQLAdapter` | `MySQLDialect` | `mysql-connector-python` |
+| MariaDB | `DB.connect_mariadb()` | `MySQLAdapter` | `MySQLDialect` | `mysql-connector-python` |
+
+`connect_mariadb()` is `connect_mysql()` with the dialect told it is talking to
+MariaDB, which is what enables native `RETURNING` (≥ 10.5) and shifts the
+`ON CONFLICT` and `JSON` version gates. Use it rather than `connect_mysql()`
+against a MariaDB server.
 
 ---
 
@@ -95,6 +107,24 @@ db = DB.connect_sqlite("mydb.db", options={
     "encoding": "UTF-8",
 })
 ```
+
+Every SQLite option and its default:
+
+| Option | Default | Effect |
+|--------|---------|--------|
+| `journal_mode` | `WAL` | `PRAGMA journal_mode` |
+| `busy_timeout` | `500` | `PRAGMA busy_timeout`, in milliseconds |
+| `foreign_keys` | `True` | Runs `PRAGMA foreign_keys = ON` |
+| `read_only` | `False` | Opens the file as a `mode=ro` URI |
+| `check_same_thread` | `True` for a file, `False` for `:memory:` | Passed to `sqlite3.connect()` |
+| `encoding` | unset | `PRAGMA encoding` |
+| `encryption_key` | unset | `PRAGMA key`, for builds with encryption support |
+| `create_functions` | `{}` | `{name: callable}` registered on every connection as variadic SQL functions. `REGEXP` and `regexp_like` are registered automatically unless a key of that name overrides them |
+
+The first three are already what a threaded server wants, so passing them is
+usually redundant — a bare `DB.connect_sqlite("mydb.db")` is opened with a WAL
+journal, foreign keys ON and a 500 ms busy timeout. Raise `busy_timeout` above
+the default when writers contend heavily.
 
 Connections are opened with `sqlite3`'s same-thread check **enabled** — the
 stock behaviour. Each thread gets its own connection, so nothing needs to cross
@@ -131,6 +161,21 @@ db = DB.connect_postgresql(
 )
 ```
 
+Two drivers are supported and `asyncpg_adapter` picks between them. It
+**defaults to `True`**, so the stock connection uses `AsyncpgAdapter` and needs
+the `asyncpg` extra:
+
+```python
+db = DB.connect_postgresql("mydb", user="postgres")                        # asyncpg
+db = DB.connect_postgresql("mydb", user="postgres", asyncpg_adapter=False)  # psycopg
+```
+
+Both share `PostgresqlDialect` and behave identically through the public API.
+asyncpg is coroutine-only, so `AsyncpgAdapter` owns a private event loop on a
+daemon thread and blocks on it — the `DB` surface stays synchronous either way.
+It binds temporal values natively and rejects the `client_encoding` option,
+since asyncpg is UTF-8 only.
+
 ### MySQL
 
 ```python
@@ -145,7 +190,26 @@ db = DB.connect_mysql(
         "connect_timeout": 10,
     },
 )
+
+# Same signature; tells the dialect it is MariaDB
+db = DB.connect_mariadb("mydb", host="localhost", user="root", password="secret")
 ```
+
+### Arguments every `connect_*` accepts
+
+| Argument | Purpose |
+|----------|---------|
+| `startup_queries` | SQL run on every new connection, including after a reconnect |
+| `options` | Driver and dialect options (see each database above) |
+| `debug_callback` | `(query, starttime, error)` called per statement — see [Debug Callback](#debug-callback) |
+| `ensure_always_connected` | Run `reconnect_if_disconnected()` before **every** statement |
+| `max_concurrent_connections` | Cap on live connections across all threads |
+| `acquire_connection_timeout` | Seconds a thread waits for a slot before `ConnectionLimitError` |
+
+`ensure_always_connected` trades a liveness check per statement for never
+handing a dead connection to a query. On PostgreSQL and MySQL that check pings
+the server, so it is not free — prefer calling `reconnect_if_disconnected()`
+once at the top of a request when the cost matters.
 
 ### Reconnecting
 
@@ -347,9 +411,9 @@ result = db.insert("users").values({"name": "Dave"}).returning(["id"]).last_inse
 new_id = result.scalar()
 
 # ON CONFLICT — native on PostgreSQL, SQLite >= 3.24 and MySQL, emulated elsewhere
-db.insert("users").values({"name": "Alice"}).on_conflict_do_nothing("name").execute()
+db.insert("users").values({"name": "Alice"}).on_conflict_do_nothing(["name"]).execute()
 db.insert("users").values({"name": "Alice", "age": 31}).on_conflict_do_update(
-    "name", {"age": 31}
+    ["name"], {"age": 31}
 ).execute()
 
 # Get last insert ID
@@ -383,6 +447,32 @@ also takes `in_transaction=True` to wrap its select-then-write in a transaction.
 
 `returning()` on UPDATE and DELETE is not emulated: on a dialect without native
 RETURNING the clause is dropped and the result holds no rows.
+
+#### Conflict targets
+
+The first argument to `on_conflict_do_nothing()` / `on_conflict_do_update()` is
+read two different ways, and the difference is not portable:
+
+| Argument | Meaning | Renders as |
+|---|---|---|
+| `list[str]` — `["email"]` | the conflicting **columns** | `ON CONFLICT ("email")` |
+| `str` — `"uq_users_email"` | a **named constraint** | `ON CONFLICT ON CONSTRAINT "uq_users_email"` |
+
+Per dialect:
+
+- **PostgreSQL** renders both.
+- **SQLite** renders the column list, and raises on the string form rather than
+  guessing which constraint was meant.
+- **MySQL and MariaDB** ignore the target entirely — the insert becomes
+  `INSERT IGNORE` or `ON DUPLICATE KEY UPDATE`, neither of which names one — so
+  either form is accepted and neither has any effect on which conflict matches.
+
+```python
+db.insert("users").values({"name": "Alice"}).on_conflict_do_nothing("name").execute()
+# QueryError: Named ON CONFLICT constraints are not supported by SQLite
+```
+
+Pass a list unless the code is deliberately PostgreSQL-only.
 
 ### UPDATE
 
@@ -476,6 +566,43 @@ db.alter_table("users") \
 # Raw alter
 db.alter_table("users").alter("ALTER COLUMN age SET NOT NULL").execute()
 ```
+
+An `AlterTableQuery` emits **one statement per alteration**, not one combined
+statement, so `to_query_with_params()` returns a `list[QueryWithParams]` where
+every other builder returns a single one:
+
+```python
+query = db.alter_table("users").add_string("nickname", size=64).add_int("score", default=0)
+for qwp in query.to_query_with_params():
+    print(qwp.query)
+# ALTER TABLE "users" ADD COLUMN "nickname" VARCHAR(64)
+# ALTER TABLE "users" ADD COLUMN "score" BIGINT DEFAULT 0
+```
+
+On MySQL each of those statements also commits implicitly, so a multi-step
+`alter_table()` cannot be rolled back halfway.
+
+### Indexes
+
+There is no index builder — indexes go through `exec()`:
+
+```python
+db.exec('CREATE INDEX IF NOT EXISTS "idx_posts_user_id" ON "posts" ("user_id")')
+```
+
+`IF NOT EXISTS` on an index is supported by PostgreSQL, SQLite and MariaDB but
+**not by MySQL**, which needs a catalog check instead:
+
+```python
+exists = db.prepared(
+    "SELECT count(*) FROM information_schema.statistics "
+    "WHERE table_schema = database() AND table_name = ? AND index_name = ?",
+    ["posts", "idx_posts_user_id"],
+).scalar()
+```
+
+Use `dialect.escape_identifier()` to quote names rather than hardcoding quotes,
+since PostgreSQL and SQLite use `"` while MySQL uses `` ` ``.
 
 ### DROP TABLE
 
@@ -781,6 +908,131 @@ table.columns()     # list[str] — column names
 table.is_empty()    # bool
 ```
 
+`db.table("users")` is the same thing without repeating the dialect:
+
+```python
+table = db.table("users")
+```
+
+---
+
+## Migrations
+
+Schema changes as ordered, reversible Python files. One migration is one file
+holding exactly one `MigrationABC` subclass:
+
+```python
+from __future__ import annotations
+
+from typing import TYPE_CHECKING
+
+from flowmaticdb.migrations import MigrationABC
+
+if TYPE_CHECKING:
+    from flowmaticdb.database import DB
+
+
+class CreateUsersTable(MigrationABC):
+    def up(self, db: DB) -> None:
+        db.create_table("users").if_not_exists() \
+            .identity("id") \
+            .string("email", size=255, not_null=True) \
+            .execute()
+
+    def down(self, db: DB) -> None:
+        db.drop_table("users").if_exists().execute()
+```
+
+`up()` and `down()` are abstract and receive the `DB` as an argument rather than
+holding one. `in_transaction()` is concrete and returns `True`; override it to
+return `False` for a migration that must not run inside a transaction.
+
+### Migrator
+
+```python
+from flowmaticdb.migrations import Migrator
+
+migrator = Migrator(db, "app/migrations")          # migrations_table="migrations"
+
+migrator.init()                                     # create the bookkeeping table
+migrator.up()                                       # apply everything pending, as one batch
+migrator.down()                                     # roll back the most recent batch
+path = migrator.create("add_email_to_users")        # write a new migration file
+```
+
+| Method | Effect |
+|--------|--------|
+| `init()` | Creates the migrations table (`if_not_exists`, so it is safe to call every run) |
+| `up()` | Applies every file not yet recorded, in filename order, under one new batch number |
+| `down()` | Reverses the highest batch, in reverse filename order |
+| `create(name)` | Writes `<YYYYMMDDHHMMSS>_<name>.py` from the template and returns its path |
+
+The bookkeeping table records `filename`, `batch` and `applied_at` per applied
+migration.
+
+### Rules
+
+- **`init()` must run before `up()` or `down()`.** Both read the bookkeeping
+  table directly and fail if it does not exist yet.
+- **`create(name)` uses `name` verbatim in the filename**, spaces included. Pass
+  `snake_case`.
+- **Ordering is a plain sort of filenames**, which is what the timestamp prefix
+  is for. Do not rename a file once it has been applied — the table keys on it.
+- **Exactly one `MigrationABC` subclass per file.** Zero raises `DatabaseError`,
+  and so does more than one. Classes imported from elsewhere do not count, so
+  shared helpers are fine.
+- **Files beginning with `_` are skipped**, which is where helper modules go.
+  They are not importable as a package, though — the loader reads each migration
+  by path, so add the directory to `sys.path` before importing a sibling helper.
+- **Each migration runs inside a transaction** unless `in_transaction()` returns
+  `False`. On MySQL that guarantee is limited: DDL commits implicitly, so a file
+  with several DDL statements cannot be rolled back halfway. Keep one logical
+  change per file.
+- **`down()` reverses a whole batch**, not one file — everything a single `up()`
+  applied comes back off together.
+
+### Adopting migrations for a database that already exists
+
+Write the current schema as an initial migration with `if_not_exists()` on every
+create and `if_exists()` on every drop. Applied to a database that already has
+the schema it creates nothing, records one row, and leaves the data untouched;
+applied to an empty one it builds everything. The same file therefore works for
+both existing deployments and fresh checkouts.
+
+Drop tables in reverse dependency order in `down()`, or foreign keys will block
+the drop.
+
+### A CLI
+
+There is no console entry point; wire one up in the project:
+
+```python
+import sys
+
+from flowmaticdb.migrations import Migrator
+
+from app.db import connect
+
+db = connect()
+migrator = Migrator(db, "app/migrations")
+
+command = sys.argv[1]
+
+if command == "create":
+    print(migrator.create(sys.argv[2]))
+else:
+    migrator.init()
+    if command == "up":
+        migrator.up()
+    elif command == "down":
+        migrator.down()
+
+db.close()
+```
+
+Run `up` on deploy, before the application starts serving — not from a request
+handler, and not from every worker at once.
+
 ---
 
 ## Expressions
@@ -832,7 +1084,7 @@ for row in plan:
 For one-off SQL that doesn't need the query builder:
 
 ```python
-# DDL (no parameters)
+# DDL (no parameters) — one statement per call, never a script
 db.exec("CREATE TABLE temp (id INTEGER PRIMARY KEY)")
 
 # DML with parameters
@@ -843,6 +1095,15 @@ rows = result.fetch_dicts()
 
 # Prepared statement shortcut
 result = db.prepared("SELECT * FROM users WHERE age > ? AND active = ?", [18, True])
+```
+
+`exec()` hands the string straight to the driver, which accepts **one statement
+per call**. A whole `.sql` file cannot be passed through it — split it, or
+rebuild it with the query builder:
+
+```python
+db.exec("CREATE TABLE a (id INTEGER); CREATE TABLE b (id INTEGER);")
+# sqlite3.ProgrammingError: You can only execute one statement at a time.
 ```
 
 ---
@@ -995,8 +1256,9 @@ Reading is unaffected — an array column always comes back as a plain `list`.
 | `GLOB` | ✅ | Native file globbing |
 | `REGEXP` | ✅ | Via `regexp_like()` or `REGEXP` operator |
 | `ALTER COLUMN` | ❌ | Raises `QueryError` |
-| `DROP COLUMN` | ❌ | Raises `QueryError` (pre-3.35.0; newer versions support it — check dialect option) |
+| `DROP COLUMN` | ✅ | Rendered as-is; SQLite supports it from 3.35.0, and an older library raises from the driver, not the dialect |
 | Named constraints | ❌ | Names stripped from constraints |
+| Named `ON CONFLICT` | ❌ | Raises `QueryError`; pass conflict **columns** as a list |
 | Auto-increment | ✅ | `INTEGER PRIMARY KEY AUTOINCREMENT` |
 | Case-insensitive LIKE | ✅ | Default SQLite behavior |
 | Datetime | ✅ | Custom `DATETIME`/`TIMESTAMP`/`DATE` datatype via `sqlite3` adapters and converters |
@@ -1052,7 +1314,7 @@ Reading is unaffected — an array column always comes back as a plain `list`.
     └──────────┘    └──────────────┘
 ```
 
-### Four Pillars
+### Five Pillars
 
 1. **Dialects** — Database-specific SQL generation
    - `DialectABC` — Abstract base
@@ -1065,6 +1327,7 @@ Reading is unaffected — an array column always comes back as a plain `list`.
    - `AdapterABC` — Abstract base
    - `SQLiteAdapter` — Wraps `sqlite3.Connection`
    - `PsycopgAdapter` — Wraps `psycopg.Connection`
+   - `AsyncpgAdapter` — Wraps `asyncpg.Connection` on a private event loop
    - `MySQLAdapter` — Wraps `mysql.connector.Connection`
 
 3. **Query Builders** — Fluent SQL construction
@@ -1081,7 +1344,12 @@ Reading is unaffected — an array column always comes back as a plain `list`.
    - `Result` — In-memory result (snapshot)
    - `SQLite3Result` — Wraps `sqlite3.Cursor`
    - `PsycopgResult` — Wraps psycopg cursor
+   - `AsyncpgResult` — Wraps an asyncpg record set
    - `MySQLResult` — Wraps `mysql.connector.cursor`
+
+5. **Migrations** — Ordered, reversible schema changes
+   - `MigrationABC` — Abstract base (`up()`, `down()`, `in_transaction()`)
+   - `Migrator` — Discovery, bookkeeping and execution
 
 ### Mixin Architecture
 
@@ -1153,9 +1421,12 @@ A leading underscore on a module name marks it as a private implementation detai
 - `raw()`, `identifier()`, `alias()`, `expression()`, `sub_query()`, `current_timestamp()`, `now()` — Module-level functions, imported from `flowmaticdb`
 - `snapshot_result()` — Import from `flowmaticdb.result`
 
+- `MigrationABC`, `Migrator` — Import from `flowmaticdb.migrations`
+
 ```python
-from flowmaticdb.adapters import PsycopgAdapter, MySQLAdapter
+from flowmaticdb.adapters import PsycopgAdapter, AsyncpgAdapter, MySQLAdapter
 from flowmaticdb.result import PsycopgResult, MySQLResult, snapshot_result
+from flowmaticdb.migrations import MigrationABC, Migrator
 from flowmaticdb import raw, identifier, alias, expression, sub_query, current_timestamp, now
 ```
 
@@ -1279,8 +1550,9 @@ Connects to MySQL by default. Edit `main.py` to switch to SQLite or PostgreSQL.
 ## Requirements
 
 - Python ≥ 3.11
-- `psycopg[binary]>=3.1` (PostgreSQL adapter — optional)
-- `mysql-connector-python` (MySQL adapter — optional)
+- `asyncpg>=0.29` (PostgreSQL, the default adapter — optional)
+- `psycopg[binary]>=3.1` (PostgreSQL, with `asyncpg_adapter=False` — optional)
+- `mysql-connector-python>=9.0` (MySQL and MariaDB adapter — optional)
 - SQLite uses the standard library (`sqlite3`)
 
 ---
