@@ -174,12 +174,14 @@ class SQLDialect(DialectABC):
             elif isinstance(join_spec, Join):
                 query.append(f" {join_spec.join.value} ")
                 query.append(self._table_name(join_spec.table))
-                if join_spec.conditions:
-                    query.append(" ON ")
+                query.append(" ON ")
+                if len(join_spec.conditions) > 0:
                     for i, cond in enumerate(join_spec.conditions):
                         if i > 0:
                             query.append(self._chain_connector(cond))
                         self._build_condition(query, params, cond)
+                else:
+                    query.append(self.cast_to_query(True))
 
     def _build_where(self, query: list[str], params: list[Any], where: list[Any] | None) -> None:
         if not where:
