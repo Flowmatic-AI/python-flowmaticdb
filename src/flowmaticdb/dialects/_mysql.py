@@ -9,7 +9,7 @@ from flowmaticdb.dialects._sql_dialect import SQLDialect
 from flowmaticdb.query import Condition, OnConflict
 from flowmaticdb.query.ddl import AlterColumn, Column, ConstraintABC, DropConstraint
 from flowmaticdb.query.enums import ConditionEnum, TypeEnum
-from flowmaticdb.query.expressions import CurrentTimestamp, Raw, SqlABC, Values
+from flowmaticdb.query.expressions import CurrentTimestamp, Raw, SqlABC, Excluded, Values
 
 
 class MySQLDialect(SQLDialect):
@@ -127,8 +127,11 @@ class MySQLDialect(SQLDialect):
         sets: list[str] = []
         for col, val in updates.items():
             esc = self.escape_identifier(col)
-            if isinstance(val, Values):
-                sets.append(f"{esc} = VALUES({esc})")
+            if isinstance(val, Excluded):
+                if val.identifier is not None:
+                    sets.append(f"{esc} = VALUES({self.escape_identifier(val.identifier)})")
+                else:
+                    sets.append(f"{esc} = VALUES({esc})")
             elif isinstance(val, SqlABC):
                 sets.append(f"{esc} = {val.raw_sql(self)}")
             else:

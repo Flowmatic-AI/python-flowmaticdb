@@ -1,8 +1,12 @@
 from __future__ import annotations
+from dataclasses import dataclass
 
 
+@dataclass
 class Excluded:
-    pass
+    identifier: str | None = None
 
+
+@dataclass
 class Values(Excluded):
     pass

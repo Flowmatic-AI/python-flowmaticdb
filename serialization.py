@@ -5,6 +5,7 @@ from datetime import datetime
 from pprint import pprint
 
 from flowmaticdb.database import DB
+from flowmaticdb.query.expressions import Excluded, Values
 
 
 def debug_callback(query: str, time: float, error: str | None):
@@ -35,6 +36,7 @@ db.insert("users")\
         "json_column": {"key1": "value1", "key2": 25},
         "datetime_column": datetime.now()
     })\
+    .on_conflict_do_update(['id'], {"json_column": Excluded("datetime_column")})\
     .execute()
 
 db.insert("users")\
@@ -42,6 +44,7 @@ db.insert("users")\
         "json_column": [1, 2, 3, 4],
         "datetime_column": datetime.now()
     })\
+    .on_conflict_do_update(['id'])\
     .execute()
 
 pprint(db.select("users").execute().fetch_dicts())

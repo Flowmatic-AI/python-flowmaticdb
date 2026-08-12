@@ -585,7 +585,10 @@ class SQLDialect(DialectABC):
         for col, val in on_conflict.updates.items():
             esc_col = self.escape_identifier(col)
             if isinstance(val, Excluded):
-                update_sets.append(f"{esc_col} = EXCLUDED.{esc_col}")
+                if val.identifier is not None:
+                    update_sets.append(f"{esc_col} = EXCLUDED.{self.escape_identifier(val.identifier)}")
+                else:
+                    update_sets.append(f"{esc_col} = EXCLUDED.{esc_col}")
             else:
                 val_q: list[str] = []
                 val_p: list[Any] = []
