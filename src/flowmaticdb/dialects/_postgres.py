@@ -96,7 +96,7 @@ class PostgresqlDialect(SQLDialect):
         if not col.auto_increment:
             return super()._build_column(col)
 
-        if self.generated_by_default_as_identity and not self.option("use_serials", False):
+        if self.generated_by_default_as_identity and not self.option("use_serials", True):
             return super()._build_column(col)
 
         sql_type = col.type
