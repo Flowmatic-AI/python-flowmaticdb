@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "flowmaticdb"
-version = "2.12.3"
+version = "2.13.0"
 description = "A Python database abstraction layer supporting PostgreSQL, SQLite, MySQL and MariaDB."
 readme = "README.md"
 requires-python = ">=3.11"
@@ -45,6 +45,9 @@ asyncpg = [
 mysql = [
     "mysql-connector-python>=9.0",
 ]
+libsql = [
+    "libsql>=0.1.11",
+]
 dev = [
     "pytest>=7.0",
     "mypy>=1.0",
@@ -52,6 +55,7 @@ dev = [
 ]
 all = [
     "asyncpg>=0.29",
+    "libsql>=0.1.11",
     "mysql-connector-python>=9.0",
     "psycopg[binary]>=3.1",
 ]

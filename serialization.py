@@ -6,6 +6,7 @@ from pprint import pprint
 
 from flowmaticdb.database import DB
 from flowmaticdb.query.expressions import Excluded, Values
+from flowmaticdb.query import WhereGroup, HavingGroup
 
 
 def debug_callback(query: str, time: float, error: str | None):
@@ -16,6 +17,7 @@ def debug_callback(query: str, time: float, error: str | None):
         print(f"[ERROR] {error}")
 
 db = DB.connect_sqlite("database.sqlite", debug_callback=debug_callback)
+db = DB.connect_libsql("libsql.sqlite", debug_callback=debug_callback)
 # db = DB.connect_postgresql("postgres", host="localhost", user="postgres", debug_callback=debug_callback, asyncpg_adapter=False)
 # db = DB.connect_postgresql("postgres", host="localhost", user="postgres", debug_callback=debug_callback, asyncpg_adapter=True)
 # db = DB.connect_mysql("flowmaticdb", host="localhost", user="root", password="", debug_callback=debug_callback)
@@ -47,7 +49,10 @@ db.insert("users")\
     .on_conflict_do_update(['id'])\
     .execute()
 
-pprint(db.select("users").execute().fetch_dicts())
+result = db.select("users").execute()
+
+pprint(result.columns())
+pprint(result.fetch_dicts())
 
 db.drop_table("users")\
     .if_exists()\

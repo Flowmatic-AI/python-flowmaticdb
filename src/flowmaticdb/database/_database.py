@@ -32,6 +32,30 @@ class Database(DatabaseABC):
         return cls(adapter, SQLiteDialect(version=adapter.version(), options=options or {}), ensure_always_connected)
 
     @classmethod
+    def connect_libsql(
+        cls,
+        name: str,
+        startup_queries: list[str] | None = None,
+        options: dict[str, Any] | None = None,
+        debug_callback: Callable[[str, float, str | None], None] | None = None,
+        ensure_always_connected: bool = False,
+        max_concurrent_connections: int | None = None,
+        acquire_connection_timeout: float | None = None,
+    ) -> Self:
+        from flowmaticdb.adapters import LibSQLAdapter
+        from flowmaticdb.dialects import LibSQLDialect
+
+        adapter = LibSQLAdapter(
+            database_name=name,
+            startup_queries=startup_queries,
+            options=options,
+            debug_callback=debug_callback,
+            max_concurrent_connections=max_concurrent_connections,
+            acquire_connection_timeout=acquire_connection_timeout,
+        )
+        return cls(adapter, LibSQLDialect(version=adapter.version(), options=options or {}), ensure_always_connected)
+
+    @classmethod
     def connect_postgresql(
         cls,
         name: str,
@@ -184,6 +208,9 @@ class Database(DatabaseABC):
 
         if importlib.util.find_spec("sqlite3") is not None:
             drivers.append("sqlite")
+
+        if importlib.util.find_spec("libsql") is not None:
+            drivers.append("libsql")
 
         if importlib.util.find_spec("psycopg") is not None or importlib.util.find_spec("asyncpg") is not None:
             drivers.append("postgresql")

@@ -33,12 +33,13 @@ pip install flowmaticdb                 # SQLite works out of the box
 pip install "flowmaticdb[postgres]"     # PostgreSQL via psycopg
 pip install "flowmaticdb[asyncpg]"      # PostgreSQL via asyncpg (the default driver)
 pip install "flowmaticdb[mysql]"        # MySQL and MariaDB
+pip install "flowmaticdb[libsql]"       # libsql, local file or embedded replica
 pip install "flowmaticdb[all]"          # every driver
 pip install "flowmaticdb[dev]"          # pytest, mypy, ruff
 ```
 
 The package itself has **no dependencies** — a driver extra is only needed for a
-server database, since `sqlite3` ships with Python.
+server database or for libsql, since `sqlite3` ships with Python.
 
 ```python
 from flowmaticdb.database import DB
@@ -74,6 +75,7 @@ count = result.scalar()      # First column of first row
 | Database | Connection Method | Adapter | Dialect | Required Driver |
 |----------|-------------------|---------|---------|----------------|
 | SQLite   | `DB.connect_sqlite()` | `SQLiteAdapter` | `SQLiteDialect` | Built-in (`sqlite3`) |
+| libsql   | `DB.connect_libsql()` | `LibSQLAdapter` | `LibSQLDialect` | `libsql>=0.1.11` |
 | PostgreSQL | `DB.connect_postgresql()` | `AsyncpgAdapter` (default) or `PsycopgAdapter` | `PostgresqlDialect` | `asyncpg>=0.29` or `psycopg[binary]>=3.1` |
 | MySQL   | `DB.connect_mysql()` | `MySQLAdapter` | `MySQLDialect` | `mysql-connector-python` |
 | MariaDB | `DB.connect_mariadb()` | `MySQLAdapter` | `MySQLDialect` | `mysql-connector-python` |
@@ -144,6 +146,84 @@ therefore share the single handle (with the same-thread check off, since sharing
 is the point), statements are serialized through a lock, and transaction state is
 process-wide rather than per thread. Use a file (WAL is enough to keep it fast)
 when threads need real isolation.
+
+### libsql
+
+```python
+from flowmaticdb.database import DB
+
+# In-memory or a local file, the same as SQLite
+db = DB.connect_libsql(":memory:")
+db = DB.connect_libsql("/path/to/database.db")
+
+# Embedded replica: local file kept in sync with a remote database
+db = DB.connect_libsql("local.db", options={
+    "sync_url": "libsql://mydb.turso.io",
+    "auth_token": "...",
+    "sync_interval": 60,
+})
+db.adapter.sync()   # pull the remote in on demand
+```
+
+`LibSQLDialect` subclasses `SQLiteDialect`, so the SQL is identical; the driver
+underneath is not, which is what the rest of this section is about.
+
+Every libsql option and its default:
+
+| Option | Default | Effect |
+|--------|---------|--------|
+| `journal_mode` | `WAL` | `PRAGMA journal_mode` |
+| `busy_timeout` | `500` | `PRAGMA busy_timeout`, in milliseconds |
+| `foreign_keys` | `True` | Runs `PRAGMA foreign_keys = ON` |
+| `read_only` | `False` | Opens the file as a `mode=ro` URI |
+| `check_same_thread` | `True` for a file, `False` for `:memory:` | Passed to `libsql.connect()` |
+| `timeout` | `5.0` | Lock wait, in seconds |
+| `auto_cast_column_types` | `True` | Reads stored text back as `datetime`/`dict`/`list` when its shape says so |
+| `encoding` | unset | `PRAGMA encoding` |
+| `encryption_key` | unset | Connect-time argument, not a PRAGMA |
+| `sync_url` | unset | Remote database this replica follows |
+| `auth_token` | unset | Credential for `sync_url` |
+| `sync_interval` | unset | Background sync period, in seconds |
+| `offline` | unset | Queue writes locally while disconnected |
+
+Threading works exactly as it does for SQLite: a file gives every thread its own
+connection, `:memory:` shares one handle behind a lock.
+
+Three differences from `connect_sqlite()` are worth knowing before switching a
+codebase over:
+
+- **Column types are guessed from the value, not read from the schema.** The
+  driver reports no declared column types, so there is nothing to decode
+  against. Instead `auto_cast_column_types` (on by default) reads stored text
+  back as the type it was written from: text opening with `{` or `[` that parses
+  is a document, and text in the datetime format the dialect writes — with or
+  without the microseconds and UTC offset this adapter adds — is a `datetime`.
+  The guess is deliberately narrow, so `"1"`, `"null"` and `"2026-08-03"` all
+  stay strings, and anything that fails to parse is returned untouched.
+
+  `BOOLEAN` is the one type it cannot reach: SQLite stores it as `0`/`1`, which
+  nothing in the value distinguishes from an integer, so a boolean column reads
+  back as an `int` where `connect_sqlite()` gives you `bool`. Decode it with
+  `dialect.parse_bool()`. Pass `options={"auto_cast_column_types": False}` to
+  switch the guessing off entirely and take the stored values as they are.
+
+  Writes are serialized to the same stored text on both drivers, so a database
+  written by one reads correctly through the other.
+- **User-defined functions cannot be registered.** `create_functions` raises
+  `AdapterError` rather than being ignored. Regex conditions still work — the
+  engine has a native `REGEXP` operator, which `LibSQLDialect` always uses
+  instead of the `regexp_like()` function `SQLiteDialect` registers, and no
+  `use_regexp` option is needed. That operator has no inline `(?i)` group, so a
+  case insensitive match folds both sides and any other flag raises
+  `QueryError`.
+- **Failed statements raise `ValueError`**, the driver's error class, not
+  `sqlite3.Error`. Code that catches driver errors by type needs updating.
+
+Do not touch a connection after closing it — reading any attribute of a closed
+handle aborts inside the driver's extension module instead of raising, and no
+`except` clause can catch that. `is_connected()` therefore tracks the adapter's
+own handles rather than probing them, which means it cannot see a handle you
+closed yourself after taking it from `get_connection()`.
 
 ### PostgreSQL
 
