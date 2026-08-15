@@ -17,7 +17,6 @@ def debug_callback(query: str, time: float, error: str | None):
         print(f"[ERROR] {error}")
 
 db = DB.connect_sqlite("database.sqlite", debug_callback=debug_callback)
-db = DB.connect_libsql("libsql.sqlite", debug_callback=debug_callback)
 # db = DB.connect_postgresql("postgres", host="localhost", user="postgres", debug_callback=debug_callback, asyncpg_adapter=False)
 # db = DB.connect_postgresql("postgres", host="localhost", user="postgres", debug_callback=debug_callback, asyncpg_adapter=True)
 # db = DB.connect_mysql("flowmaticdb", host="localhost", user="root", password="", debug_callback=debug_callback)

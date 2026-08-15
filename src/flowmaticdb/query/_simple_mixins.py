@@ -106,6 +106,9 @@ class ValuesMixin:
 class UpdatesMixin:
     _updates_dict: dict[str, Any]
 
+    def set(self, updates: dict[str, Any]) -> Self:
+        return self.updates(updates)
+
     def updates(self, updates: dict[str, Any]) -> Self:
         self._updates_dict = dict(updates)
         return self

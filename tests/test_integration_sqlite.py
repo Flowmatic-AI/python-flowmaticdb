@@ -355,3 +355,38 @@ def test_sqlite_datetime_column_keeps_unparseable_values() -> None:
     assert adapter.query('SELECT "ts" FROM "t"').scalar() == "not a timestamp"
 
     adapter.close()
+
+
+def test_sqlite_works_without_any_optional_driver_installed() -> None:
+    """The package promises SQLite out of the box, with no driver extra.
+
+    That promise is broken by a single module-scope ``import <driver>`` anywhere
+    under ``flowmaticdb/adapters``, because importing one adapter imports the
+    package, which imports them all. Run in a subprocess with ``-S`` so that
+    site-packages -- and with it every optional driver installed for the test
+    suite itself -- is off the path, which is the only way to see what a plain
+    ``pip install flowmaticdb`` sees."""
+    import subprocess
+    import sys
+    from pathlib import Path
+
+    src = Path(__file__).resolve().parent.parent / "src"
+    program = (
+        "import sys;"
+        f"sys.path.insert(0, {str(src)!r});"
+        "from flowmaticdb.database import DB;"
+        "db = DB.connect_sqlite(':memory:');"
+        "db.exec('CREATE TABLE t (val INTEGER)');"
+        "db.exec('INSERT INTO t (val) VALUES (1)');"
+        "print(DB.drivers(), db.query('SELECT val FROM t').scalar())"
+    )
+
+    completed = subprocess.run(
+        [sys.executable, "-S", "-c", program],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    assert completed.stdout.strip() == "['sqlite'] 1"

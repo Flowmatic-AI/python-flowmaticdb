@@ -1,6 +1,6 @@
 # flowmaticdb — Agent Instructions
 
-A Python database abstraction layer (PostgreSQL + SQLite + libsql + MySQL), ported from PHP `sentience/database`.
+A Python database abstraction layer (PostgreSQL + SQLite + MySQL), ported from PHP `sentience/database`.
 
 ## Quick start
 
@@ -13,9 +13,8 @@ pip install -r requirements.txt
 
 | Command | Purpose |
 |---------|---------|
-| `python3 -m pytest` | Run all tests (unit + SQLite integration; 452 passing without a server, 496 with MySQL and PostgreSQL up) |
+| `python3 -m pytest` | Run all tests (unit + SQLite integration; 452 passing without a server, 496 with MySQL and PostgreSQL up). Two long-standing failures: `test_sqlite_foreign_keys_pragma_left_alone_by_default` and `test_pg_identity_column_modern_version` |
 | `python3 -m pytest tests/test_integration_sqlite.py` | SQLite integration tests |
-| `python3 -m pytest tests/test_integration_libsql.py` | libsql integration tests (no server; skips when the optional `libsql` package is not installed) |
 | `python3 -m pytest tests/test_integration_postgres.py` | PostgreSQL integration tests (skips when PG not reachable on localhost:5432; run `docker compose up -d postgres`) |
 | `python3 -m pytest tests/test_integration_mysql.py` | MySQL integration tests (skips when MySQL not reachable on localhost:3306; run `docker start sentience-v3-mysql-1` or any `mysql` container with `MYSQL_ALLOW_EMPTY_PASSWORD=yes` on port 3306 — the suite auto-creates the `flowmaticdb` database) |
 | `python3 -m pytest tests/test_dialect_sql.py -k "test_select"` | Single test or pattern |
@@ -29,10 +28,10 @@ No Makefile, CI workflows, or pre-commit hooks exist.
 
 Five pillars under `src/flowmaticdb/`:
 
-- **`dialects/`** — SQL generation (`SQLDialect` base, `PostgresqlDialect`, `SQLiteDialect`, `LibSQLDialect`). `SQLDialect` is the largest file (~713 lines).
-- **`adapters/`** — Connection wrappers (`SQLiteAdapter`, `LibSQLAdapter`, `PsycopgAdapter`, `AsyncpgAdapter`, `MySQLAdapter`). Connection lifecycle is four methods: `_connect()` opens, `_disconnect()` unconditionally drops the driver handle, `close()` is the public teardown that honours the `persistent`/`optimize` options, and `is_connected()` reports liveness. All four are **per calling thread** except `close()`, which is global. `reconnect()` is concrete on `AdapterABC` (`_disconnect()`, errors suppressed, then `_connect()`); `AsyncpgAdapter` overrides it to restart its loop thread first, since its `close()` tears the loop down too.
+- **`dialects/`** — SQL generation (`SQLDialect` base, `PostgresqlDialect`, `SQLiteDialect`). `SQLDialect` is the largest file (~713 lines).
+- **`adapters/`** — Connection wrappers (`SQLiteAdapter`, `PsycopgAdapter`, `AsyncpgAdapter`, `MySQLAdapter`). Connection lifecycle is four methods: `_connect()` opens, `_disconnect()` unconditionally drops the driver handle, `close()` is the public teardown that honours the `persistent`/`optimize` options, and `is_connected()` reports liveness. All four are **per calling thread** except `close()`, which is global. `reconnect()` is concrete on `AdapterABC` (`_disconnect()`, errors suppressed, then `_connect()`); `AsyncpgAdapter` overrides it to restart its loop thread first, since its `close()` tears the loop down too.
 - **`query/`** — Fluent query builders (`SelectQuery`, `InsertQuery`, `UpdateQuery`, `DeleteQuery`, `CreateTableQuery`, `AlterTableQuery`, `DropTableQuery`). Mixins: `WhereMixin`, `HavingMixin`, `JoinsMixin`, etc.
-- **`result/`** — Result set abstraction (`Result`, `SQLite3Result`, `LibSQLResult`, `PsycopgResult`, `AsyncpgResult`, `MySQLResult`). Methods: `fetch_dict()`, `fetch_dicts()`, `scalar()`, `fetch_object()`, `fetch_objects()`, `columns()`.
+- **`result/`** — Result set abstraction (`Result`, `SQLite3Result`, `PsycopgResult`, `AsyncpgResult`, `MySQLResult`). Methods: `fetch_dict()`, `fetch_dicts()`, `scalar()`, `fetch_object()`, `fetch_objects()`, `columns()`.
 - **`migrations/`** — Schema migrations. Subclass `MigrationABC` (`up(db)`/`down(db)` abstract — the `DB` is passed in, not stored on the instance; `in_transaction()` returns `True` by default). `Migrator(db, migrations_dir, migrations_table="migrations")` drives them: `init()`, `up()`, `down()`, `create(name)`.
 
 User-facing facade: `from flowmaticdb.database import DB`
@@ -49,6 +48,8 @@ Within each package, modules named with a leading underscore (e.g. `flowmaticdb.
 ## Import gotchas
 
 - Always import from the package, never a `_`-prefixed module inside it: `from flowmaticdb.adapters import PsycopgAdapter`, not `from flowmaticdb.adapters._postgres import PsycopgAdapter`. Inside `src/flowmaticdb` three carve-outs are forced by the import graph — see **Leading underscore = private** under Key conventions before "fixing" a `_module` import there.
+- **Never import an optional driver at module scope.** `adapters/__init__.py` imports every adapter module, so one module-scope `import psycopg`/`asyncpg`/`mysql.connector` makes the whole `flowmaticdb.adapters` package — and with it `connect_sqlite()`, which needs no extra at all — fail without that package installed. Every adapter puts its driver under `if TYPE_CHECKING:` (annotations are strings, so they never execute) and does the real import inside `_open_connection()`. Regression test: `test_sqlite_works_without_any_optional_driver_installed` in `tests/test_integration_sqlite.py` re-runs a SQLite CRUD in a subprocess with `-S`, so site-packages is off the path.
+- **`drivers()` checks a dotted module's parent first.** `importlib.util.find_spec("mysql.connector")` imports `mysql` to look the submodule up and *raises* when that package is absent, instead of answering `None`.
 - `PsycopgAdapter` is exported from `flowmaticdb.adapters` — `from flowmaticdb.adapters import PsycopgAdapter`.
 - `PsycopgResult` is exported from `flowmaticdb.result` — `from flowmaticdb.result import PsycopgResult`.
 - `raw()`, `identifier()`, `alias()`, `expression()`, `sub_query()`, `current_timestamp()`, `now()` — module-level functions exported from the top-level package: `from flowmaticdb import raw`.
@@ -110,15 +111,14 @@ A `DB`/adapter is shared between threads; a **connection is not**.
 
 ## Testing
 
-- **Testing**: 452 tests pass without any database (unit + SQLite in-memory/file integration, including `test_threading.py` and `test_connection_limit.py`); 496 with both servers up.
+- **Testing**: 452 tests pass without any database (unit + SQLite in-memory/file integration, including `test_threading.py` and `test_connection_limit.py`); 496 with both servers up — the 44 skips are exactly the PostgreSQL (31) and MySQL (13) suites.
 - **Unit tests** (no database): `test_dialect_*.py`, `test_*_query.py`, `test_conditions.py`, `test_joins.py`, `test_expressions.py`, `test_query_with_params.py`, `test_result_abstract.py`, `test_json_and_datetime_types.py`, `test_boolean_types.py`.
-- **Integration tests**: `test_integration_sqlite.py` uses SQLite `:memory:` — no external services needed. `test_integration_libsql.py` needs no service either, and skips through `pytest.importorskip` when the optional `libsql` package is missing. `test_integration_postgres.py` requires a PostgreSQL service on `localhost:5432` (skipped via `pytestmark` when unreachable; run `docker compose up -d postgres`). `test_integration_mysql.py` requires a MySQL service on `localhost:3306` with `MYSQL_ALLOW_EMPTY_PASSWORD=yes` (skipped via a session-scoped fixture when unreachable; the suite auto-creates the `flowmaticdb` database and drops all user tables between tests).
+- **Integration tests**: `test_integration_sqlite.py` uses SQLite `:memory:` — no external services needed. `test_integration_postgres.py` requires a PostgreSQL service on `localhost:5432` (skipped via `pytestmark` when unreachable; run `docker compose up -d postgres`). `test_integration_mysql.py` requires a MySQL service on `localhost:3306` with `MYSQL_ALLOW_EMPTY_PASSWORD=yes` (skipped via a session-scoped fixture when unreachable; the suite auto-creates the `flowmaticdb` database and drops all user tables between tests).
 - **Fixtures**: `conftest.py` provides `sql_dialect`, `sqlite_dialect`, `pg_dialect`, `mysql_dialect`. The postgres integration module defines its own `pg_adapter` / `pg_dialect` / `pg_db` yield fixtures. The mysql integration module defines `mysql_adapter` / `mysql_dialect` (the latter overrides the conftest one within that module) plus a session-scoped `_flowmaticdb_database` bootstrap fixture.
 - **DDL has no parameters** — use `adapter.exec(qwp.query)` not `adapter.query_with_params()`.
 - **DML uses parameters** — use `adapter.query_with_params(dialect, qwp)`.
 - **Placeholder conversion lives in adapters** — each adapter converts the dialect's `?` placeholders to its driver's native format:
   - `SQLiteAdapter.query_with_params()` calls `percent_s_to_question_marks()` — `%s` → `?` (SQLite uses `?` natively)
-  - `LibSQLAdapter.query_with_params()` calls `percent_s_to_question_marks()` as well — the libsql driver's paramstyle is `qmark`
   - `PsycopgAdapter.query_with_params()` calls `question_marks_to_percent_s()` — `?` → `%s` (psycopg uses `%s`)
   - `MySQLAdapter.query_with_params()` calls `question_marks_to_percent_s()` — `?` → `%s` (mysql.connector uses `%s`)
   - `AsyncpgAdapter.query_with_params()` calls the module-local `_placeholders_to_dollar_signs()` — both `?` and `%s` → `$1`, `$2`, … (asyncpg only speaks native PostgreSQL placeholders)
@@ -134,13 +134,6 @@ A `DB`/adapter is shared between threads; a **connection is not**.
   - `MySQLResult` decodes columns the server reports as type code 245 (`json`); it tracks them by *position*, so duplicate column names in a join still decode correctly.
   - `SQLiteAdapter._connect()` opens connections with `check_same_thread` defaulting to `not shared_across_threads` — i.e. stock `sqlite3` behaviour (`True`) for file databases, since each thread now has its own handle, and `False` only for in-memory ones, where the handle is shared by design. The option still overrides both. `close()` closes every thread's handle from the caller's thread, which the check rejects: the `contextlib.suppress(sqlite3.Error)` there is load-bearing, and dropping the last reference (`take_all()`) closes those handles at deallocation instead.
   - `SQLiteAdapter._connect()` calls the module-local `_register_types()` (idempotent, so it runs per connect rather than at import) and opens connections with `detect_types=sqlite3.PARSE_DECLTYPES`. Registration mutates the process-wide `sqlite3` registry — that is deliberate and commented. Params of type `datetime`/`date`/`dict`/`list` bypass `cast_to_driver()` (see the module-local `_cast_param()`) so the registered adapters serialize them at full ISO-8601 fidelity; the dialect's `datetime_format` drops microseconds.
-- **libsql is not `sqlite3` with a different name.** `LibSQLAdapter` mirrors `SQLiteAdapter` (same `_is_memory_database()` sharing rule, same `_statement_lock`, same `persistent`/`optimize` close path), but the driver forces four departures, each commented at its site:
-  - **Errors are `ValueError`.** The driver raises it for missing tables, syntax errors, constraint violations and readonly writes, keeping `libsql.Error` for a handful of its own paths. The module-local `_DRIVER_ERRORS` tuple holds both — catching only `libsql.Error` lets every real query error past the debug callback.
-  - **A closed handle must never be touched.** Reading any attribute of one aborts inside the extension module (`pyo3_runtime.PanicException`, a `BaseException`), which no ordinary `except` catches. So `is_connected()` reports whether the store holds a handle instead of probing it, and every close path drops the handle from the store in the same breath. Closing twice is safe; that is the only post-close call that is.
-  - **The driver binds nothing but NULL/int/float/str/bytes,** and has no adapter/converter registry to extend. The module-local `_cast_param()` renders temporals and documents itself, at the same ISO-8601 fidelity `SQLiteAdapter` gets from its registered adapters, so both drivers store identical text. Reads have no schema to decode against — the cursor description carries no declared types — so `LibSQLResult` guesses from the value instead (`_guess_value()`): text opening `{`/`[` that parses is a document, text matching `_DATETIME_SHAPE` is a `datetime` via `fromisoformat` (no timezone invented for a value written without one). Deliberately narrow — `"1"`, `"null"`, a bare date and unparseable text all stay text. BOOLEAN is out of reach (0/1 is indistinguishable from an integer) and still needs `parse_bool()`. The `auto_cast_column_types` option (default `True`) switches it off; `LibSQLAdapter` reads it **once in `__init__`** and passes it to every `LibSQLResult`, because `DatabaseABC.query_with_params()` routes a parameterless query to `adapter.query()`, which has no dialect and must behave identically. Documented in the libsql section of `README.md`.
-  - **No user-defined functions.** There is no `create_function()`, so `_open_connection()` raises `AdapterError` when the `create_functions` option is set rather than letting queries fail later. `regexp_like()` therefore does not exist either — `LibSQLDialect._build_condition_regex()` always emits the engine's native `REGEXP` operator (no `use_regexp` opt-in), folds both sides for a case insensitive match since that flavour has no inline `(?i)` group, and raises `QueryError` for any other flag.
-  - `encryption_key` is a connect argument here, not a `PRAGMA`; `sync_url`/`auth_token`/`sync_interval`/`offline` configure an embedded replica and `LibSQLAdapter.sync()` pulls it on demand.
-  - `LibSQLResult.fetch_dicts()` treats a `None` from `fetchall()` as no rows — that is what a statement without a result set returns here.
 - **Fluent table reassignment** — use `.table("new_table")` instead of `.from_("new_table")` on `SelectQuery`, `DeleteQuery`, and `DropTableQuery`.
 - **Qualified column references** — pass columns/conditions as two-element lists (e.g. `["users", "id"]`) or wrap in `identifier(["users","id"])`. This holds for `columns()`, `group_by()` and `returning()` as well as the `where_*`/`having_*` families. A dotted string like `"users.id"` is treated as a single identifier and escaped as `` `users.id` `` (non-existent column). Use `raw("...")` (a `SqlABC`) for raw JOIN clauses and aggregate expressions — `JoinsMixin.join()` ignores bare strings.
 - **Schema-qualified INSERT/DELETE/UPDATE/CREATE** — pass `list[str]` directly (e.g. `db.insert(["schema", "table"])`). The dialect handles list splitting natively.

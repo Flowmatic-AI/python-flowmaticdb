@@ -45,9 +45,6 @@ asyncpg = [
 mysql = [
     "mysql-connector-python>=9.0",
 ]
-libsql = [
-    "libsql>=0.1.11",
-]
 dev = [
     "pytest>=7.0",
     "mypy>=1.0",
@@ -55,7 +52,6 @@ dev = [
 ]
 all = [
     "asyncpg>=0.29",
-    "libsql>=0.1.11",
     "mysql-connector-python>=9.0",
     "psycopg[binary]>=3.1",
 ]
