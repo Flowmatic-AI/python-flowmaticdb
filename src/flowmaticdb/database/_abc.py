@@ -182,8 +182,7 @@ class DatabaseABC:
         return DropIndexQuery(self._dialect, table, database=self, name=name)
 
     def list_tables(self, schema: str = "public") -> list[str]:
-        result = self.query_with_params(self._dialect.list_tables(schema))
-        return [str(row["table_name"]) for row in result.fetch_dicts()]
+        return self.query_with_params(self._dialect.list_tables(schema)).scalars()
 
     def describe_table(self, table: str | list[str]) -> TableDescription:
         from flowmaticdb.database._introspection import describe_table

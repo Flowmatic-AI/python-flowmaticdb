@@ -299,6 +299,9 @@ for unique in db.describe_table("users").constraints.unique:
 db.drop_index("users", "idx_users_name_age").if_exists().execute()
 db.table("users").drop_index("idx_users_updated").execute()
 
+print('List of tables:')
+print(db.list_tables())
+
 try:
     db.drop_index("users", "idx_that_was_never_there").execute()
 except Exception as e:
