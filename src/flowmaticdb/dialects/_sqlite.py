@@ -60,16 +60,10 @@ class SQLiteDialect(SQLDialect):
         columns: list[Any],
         unique: bool = False,
     ) -> QueryWithParams:
-        # SQLite qualifies the index and leaves the table bare -- the exact
-        # mirror of PostgreSQL and MySQL, which reject a qualified index name
-        # and take the schema on the table instead.
         _, table_name = self._schema_and_table(table)
         return super().create_index(if_not_exists, self._index_name(name, table), table_name, columns, unique)
 
     def list_tables(self, schema: str) -> QueryWithParams:
-        # SQLite has no schemas, so the requested one is ignored. The internal
-        # sqlite_ tables (sqlite_sequence, sqlite_stat1, ...) are not the
-        # caller's, so they stay out of the listing.
         query = (
             "SELECT m.name AS table_name"
             " FROM sqlite_master m"
@@ -92,8 +86,6 @@ class SQLiteDialect(SQLDialect):
             " ti.type AS column_type,"
             ' ti."notnull" AS not_null,'
             " ti.dflt_value AS default_expression,"
-            # SQLite has no catalog flag for AUTOINCREMENT -- the keyword only
-            # survives in the stored CREATE TABLE statement.
             " CASE WHEN ti.pk = 1 AND UPPER(ti.type) = 'INTEGER' AND EXISTS ("
             f" SELECT 1 FROM {master} m"
             " WHERE m.type = 'table' AND m.name = ? AND INSTR(UPPER(m.sql), 'AUTOINCREMENT') > 0"
@@ -119,9 +111,6 @@ class SQLiteDialect(SQLDialect):
             foreign_key_list = "pragma_foreign_key_list(?, ?)"
             params = [name, schema, schema, name, schema]
 
-        # origin 'u' is an index SQLite built for a UNIQUE constraint; 'c' is a
-        # standalone CREATE INDEX and 'pk' the primary key, neither of which is
-        # a constraint the table declared. Foreign keys carry no name at all.
         query = (
             "SELECT"
             " 'u:' || il.name AS constraint_id,"
@@ -253,17 +242,12 @@ class SQLiteDialect(SQLDialect):
     def parse_column_type(self, sql_type: str, auto_increment: bool) -> tuple[TypeEnum | str, int | None]:
         parsed_type, size = super().parse_column_type(sql_type, auto_increment)
 
-        # _build_column() renders every identity column as INTEGER PRIMARY KEY
-        # AUTOINCREMENT whatever its width, and that rowid alias is a 64-bit
-        # integer, so the declared INTEGER says nothing about the width here.
         if auto_increment and parsed_type == TypeEnum.INT:
             return parsed_type, 64
 
         return parsed_type, size
 
     def _parse_type_name(self, name: str, size: int | None) -> tuple[TypeEnum, int | None] | None:
-        # REAL is the only float SQLite renders, at any width, so it answers
-        # with the width the float() builder defaults to.
         if name == "real":
             return TypeEnum.FLOAT, 64
 

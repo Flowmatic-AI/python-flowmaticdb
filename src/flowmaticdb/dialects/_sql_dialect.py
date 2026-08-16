@@ -33,19 +33,10 @@ from flowmaticdb.query.expressions import Alias, CurrentTimestamp, Excluded, Pos
 
 _TRAILING_ZEROS = re.compile(r"(\.[0-9]+?)0+$")
 
-# A declared type as an engine reports it: a name that may run to several words
-# ("double precision", "timestamp with time zone") optionally followed by a
-# precision, itself optionally followed by a scale -- VARCHAR(64), DATETIME(6),
-# DECIMAL(30, 15).
 _DECLARED_TYPE = re.compile(r"^\s*([A-Za-z][A-Za-z0-9 ]*?)\s*(?:\(\s*(\d+)\s*(?:,\s*\d+\s*)?\))?\s*$")
 
-# The spellings an engine reports for a CURRENT_TIMESTAMP default. MySQL carries
-# the fractional precision along -- CURRENT_TIMESTAMP(6) -- and NOW() is the same
-# function under another name.
 _CURRENT_TIMESTAMP_DEFAULT = re.compile(r"^(?:CURRENT_TIMESTAMP(?:\s*\(\s*\d+\s*\))?|NOW\s*\(\s*\))$", re.IGNORECASE)
 
-# What a boolean default looks like once the engines have had their say: t/f
-# from PostgreSQL, 1/0 from the two that store booleans as integers.
 _TRUE_DEFAULTS = ("true", "t", "1", "yes")
 _FALSE_DEFAULTS = ("false", "f", "0", "no")
 
@@ -880,8 +871,6 @@ class SQLDialect(DialectABC):
         return QueryWithParams(query="".join(query_parts))
 
     def _index_name(self, name: str | list[str], table: Any) -> str | list[str]:
-        # An index always lives in its table's schema, so a bare index name
-        # inherits whatever schema the table was qualified with.
         if isinstance(name, list):
             return name
 
@@ -901,11 +890,6 @@ class SQLDialect(DialectABC):
 
         return QueryWithParams(query=query, params=params)
 
-    # Introspection queries return a fixed set of column aliases so a single
-    # parser can read every dialect: column rows are (column_name, column_type,
-    # not_null, default_expression, auto_increment) and constraint rows are
-    # (constraint_id, constraint_name, constraint_type, column_name,
-    # column_position, ref_table, ref_column, on_delete, on_update).
     def describe_table_columns(self, table: Any) -> QueryWithParams:
         schema, name = self._schema_and_table(table)
         params: list[Any] = [name]
@@ -960,8 +944,6 @@ class SQLDialect(DialectABC):
 
         return QueryWithParams(query=query, params=params)
 
-    # SQL rendering the introspection queries fall back on when the caller did
-    # not qualify the table with a schema. None means "do not filter at all".
     default_schema_sql: ClassVar[str | None] = None
 
     @staticmethod
@@ -1104,10 +1086,6 @@ class SQLDialect(DialectABC):
         return parsed
 
     def _parse_type_name(self, name: str, size: int | None) -> tuple[TypeEnum, int | None] | None:
-        # The inverse of type(): each branch answers with the bit width that
-        # renders this very name again, so describe_table() -> create_table()
-        # is a round-trip. A name this dialect cannot produce is left alone by
-        # returning None, and reaches the caller as the raw string.
         if name in ("boolean", "bool"):
             return TypeEnum.BOOL, None
         if name in ("smallint", "int2"):
@@ -1119,7 +1097,6 @@ class SQLDialect(DialectABC):
         if name in ("decimal", "numeric"):
             return TypeEnum.FLOAT, 64 if (size or 0) > 15 else 32
         if name in ("varchar", "character varying"):
-            # An unbounded VARCHAR is a TEXT by another name.
             return TypeEnum.STRING, size if size is not None else sys.maxsize
         if name == "text":
             return TypeEnum.STRING, sys.maxsize
@@ -1131,12 +1108,6 @@ class SQLDialect(DialectABC):
         return None
 
     def parse_default(self, default_expression: str, type_enum: TypeEnum | str) -> Any:
-        # The inverse of _build_column_default(): the engine hands back the
-        # DEFAULT clause as it stored it, and this reads it as the Python value
-        # the column was declared with. Anything this dialect cannot read as a
-        # literal of that type -- a function call, an arithmetic expression --
-        # is left alone and reaches the caller as the raw string, the same way
-        # an unknown declared type does.
         expression = default_expression.strip()
 
         if _CURRENT_TIMESTAMP_DEFAULT.match(expression):
@@ -1148,8 +1119,6 @@ class SQLDialect(DialectABC):
         value, is_literal = self._parse_default_literal(expression)
 
         if type_enum == TypeEnum.STRING:
-            # On the engines that report a literal, an unquoted token is an
-            # expression rather than a value.
             return value if is_literal else default_expression
 
         if type_enum == TypeEnum.BOOL:
@@ -1176,16 +1145,12 @@ class SQLDialect(DialectABC):
             return parsed if isinstance(parsed, datetime) else default_expression
 
         if type_enum == TypeEnum.JSON:
-            # decode_json() hands back what it was given when it will not parse.
             decoded = self.parse_json(value)
             return default_expression if isinstance(decoded, str) else decoded
 
         return default_expression
 
     def _parse_default_literal(self, expression: str) -> tuple[str, bool]:
-        # A quoted SQL literal down to its value, with the doubling that escapes
-        # an embedded quote undone. The flag says whether it was quoted at all,
-        # which is what tells a string value apart from an expression.
         if len(expression) >= 2 and expression.startswith("'") and expression.endswith("'"):
             return expression[1:-1].replace("''", "'"), True
 

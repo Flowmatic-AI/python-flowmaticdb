@@ -21,9 +21,6 @@ def _optional_string(value: Any) -> str | None:
 
 
 def _referential_action(value: Any) -> ReferentialActionEnum | str | None:
-    # Every engine reports the action in the standard's own spelling, so the
-    # enum a foreign key was built with is the enum that comes back. A spelling
-    # outside the standard is left as the raw string rather than dropped.
     if value is None:
         return None
 
@@ -40,15 +37,9 @@ def parse_columns(dialect: DialectABC, rows: list[dict[str, Any]]) -> list[Colum
 
     for row in rows:
         auto_increment = dialect.parse_bool(row["auto_increment"])
-        # The engine reports its own spelling ("character varying(64)"); the
-        # dialect maps it back onto the TypeEnum and width that produced it.
         column_type, size = dialect.parse_column_type(str(row["column_type"]), auto_increment)
 
-        # An auto-incrementing column's default is the sequence driving it,
-        # which is not a default the table ever declared.
         default_expression = None if auto_increment else _optional_string(row["default_expression"])
-        # The engine reports the DEFAULT clause as stored text; the dialect
-        # reads it back as the Python value the column was declared with.
         default = None if default_expression is None else dialect.parse_default(default_expression, column_type)
 
         columns.append(Column(
@@ -66,10 +57,6 @@ def parse_columns(dialect: DialectABC, rows: list[dict[str, Any]]) -> list[Colum
 def parse_constraints(rows: list[dict[str, Any]]) -> TableConstraints:
     constraints = TableConstraints()
 
-    # A multi-column constraint arrives as one row per column, already ordered
-    # by position, so each row either opens a constraint or extends the one its
-    # id opened. Grouping goes by id rather than by name because SQLite reports
-    # no name at all for a foreign key.
     unique_by_id: dict[str, UniqueConstraint] = {}
     foreign_keys_by_id: dict[str, ForeignKeyConstraint] = {}
 

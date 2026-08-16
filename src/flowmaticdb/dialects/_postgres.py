@@ -15,8 +15,6 @@ from flowmaticdb.query.expressions import PostgresArray
 
 _TZ_OFFSET_RE = re.compile(r"([+-]\d{2})$")
 
-# The ::type PostgreSQL appends to a default to record what it resolved the
-# literal to, names of several words and array brackets included.
 _DEFAULT_CAST = re.compile(r"::[A-Za-z_][A-Za-z0-9_ ]*(?:\[\])*$")
 
 _NAIVE_DATETIME_FORMAT = "%Y-%m-%d %H:%M:%S.%f"
@@ -136,8 +134,6 @@ class PostgresqlDialect(SQLDialect):
         return QueryWithParams(query=query, params=[schema])
 
     def describe_table_columns(self, table: Any) -> QueryWithParams:
-        # attidentity only exists from PostgreSQL 10 on; before that an
-        # auto-incrementing column is always a serial, i.e. a nextval() default.
         identity_sql = "a.attidentity <> ''" if self._version >= 100000 else "FALSE"
 
         query = (
@@ -158,9 +154,6 @@ class PostgresqlDialect(SQLDialect):
         return QueryWithParams(query=query, params=[self._table_name(table)])
 
     def describe_table_constraints(self, table: Any) -> QueryWithParams:
-        # SET DEFAULT is spelled out even though ReferentialActionEnum omits it:
-        # a table created outside this library can declare one, and describing it
-        # should report the rule rather than swallow it.
         action = (
             "CASE {column}"
             " WHEN 'a' THEN 'NO ACTION'"
@@ -238,15 +231,12 @@ class PostgresqlDialect(SQLDialect):
             return TypeEnum.FLOAT, 64
         if name == "real":
             return TypeEnum.FLOAT, 32
-        # format_type() spells TIMESTAMPTZ out in full.
         if name in ("timestamptz", "timestamp with time zone", "timestamp without time zone", "timestamp"):
             return TypeEnum.DATETIME, size
 
         return super()._parse_type_name(name, size)
 
     def _parse_default_literal(self, expression: str) -> tuple[str, bool]:
-        # PostgreSQL reports a default with the type it resolved it to hung off
-        # the end: 'no way'::character varying, '{"a": 1}'::jsonb.
         return super()._parse_default_literal(_DEFAULT_CAST.sub("", expression).strip())
 
     def type(self, type_enum: TypeEnum, size: int | None = None) -> str:

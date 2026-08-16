@@ -59,8 +59,6 @@ class MySQLDialect(SQLDialect):
         self.on_conflict = True if self._is_mariadb else self._version >= 40100
         self.returning = self._is_mariadb and self._version >= 100500
         self.json = self._version >= 100207 if self._is_mariadb else self._version >= 50708
-        # MySQL proper has never accepted IF (NOT) EXISTS on an index; MariaDB
-        # grew both spellings in 10.1.4.
         self.index_if_not_exists = self._is_mariadb and self._version >= 100104
         self.index_if_exists = self._is_mariadb and self._version >= 100104
 
@@ -91,17 +89,13 @@ class MySQLDialect(SQLDialect):
         return super().create_table(if_not_exists, table, columns, merged_primary_keys, constraints)
 
     def drop_index(self, if_exists: bool, name: str | list[str], table: Any) -> QueryWithParams:
-        # MySQL scopes an index name to its table rather than to the schema.
         qwp = super().drop_index(if_exists, name, table)
         return QueryWithParams(query=f"{qwp.query} ON {self._table_name(table)}")
 
     def _index_name(self, name: str | list[str], table: Any) -> str | list[str]:
-        # The table carries the schema on MySQL, so the index name stays bare.
         return name
 
     def list_tables(self, schema: str) -> QueryWithParams:
-        # MySQL has no schema below the database, so the requested one is
-        # ignored and the connected database answers instead.
         query = (
             "SELECT t.TABLE_NAME AS table_name"
             " FROM information_schema.TABLES t"
@@ -119,7 +113,6 @@ class MySQLDialect(SQLDialect):
         query = (
             "SELECT"
             " c.COLUMN_NAME AS column_name,"
-            # COLUMN_TYPE keeps the declared width; DATA_TYPE drops it.
             " c.COLUMN_TYPE AS column_type,"
             " CASE WHEN c.IS_NULLABLE = 'NO' THEN 1 ELSE 0 END AS not_null,"
             " c.COLUMN_DEFAULT AS default_expression,"
@@ -136,12 +129,6 @@ class MySQLDialect(SQLDialect):
         params: list[Any] = [name]
         schema_filter = self._schema_filter("tc.table_schema", schema, params)
 
-        # The base reaches the referenced column by joining key_column_usage
-        # back onto referential_constraints.unique_constraint_name, which
-        # assumes a constraint name identifies one constraint per schema. MySQL
-        # names every primary key 'PRIMARY', so that join multiplies a foreign
-        # key by the number of tables in the schema. key_column_usage carries
-        # the referenced table and column outright here, so use those instead.
         query = (
             "SELECT"
             " tc.constraint_name AS constraint_id,"
@@ -280,21 +267,14 @@ class MySQLDialect(SQLDialect):
         return f"DROP INDEX {self.escape_identifier(alter.name)}"
 
     def _parse_type_name(self, name: str, size: int | None) -> tuple[TypeEnum, int | None] | None:
-        # COLUMN_TYPE carries the attributes along: "bigint unsigned".
         name = name.removesuffix(" zerofill").removesuffix(" unsigned")
 
-        # TINYINT is what this dialect renders a boolean as. MySQL offers no
-        # boolean of its own, so a genuine one-byte integer is indistinguishable.
         if name == "tinyint":
             return TypeEnum.BOOL, None
         if name == "double":
             return TypeEnum.FLOAT, 64
         if name == "float":
             return TypeEnum.FLOAT, 32
-        # Unlike PostgreSQL and SQLite, MySQL's text types are each bounded, so
-        # the width that renders them again is the bound itself. Even the widest
-        # of them stops short of sys.maxsize, which is reserved for the dialects
-        # whose TEXT really is unbounded.
         if name == "text":
             return TypeEnum.STRING, 65535
         if name == "mediumtext":
@@ -307,9 +287,6 @@ class MySQLDialect(SQLDialect):
         return super()._parse_type_name(name, size)
 
     def _parse_default_literal(self, expression: str) -> tuple[str, bool]:
-        # Alone among the three, MySQL reports the default's value rather than
-        # the literal that spelled it: no way, not 'no way'. So there are no
-        # quotes to strip, and a string default is always a value.
         return expression, True
 
     def type(self, type_enum: TypeEnum, size: int | None = None) -> str:

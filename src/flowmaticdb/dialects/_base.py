@@ -234,7 +234,5 @@ class DialectABC(ABC):
     def parse_default(self, default_expression: str, type_enum: TypeEnum | str) -> Any:
         ...
 
-    # Concrete so a dialect only overrides it when its declared type loses
-    # width on an auto-incrementing column.
     def parse_column_type(self, sql_type: str, auto_increment: bool) -> tuple[TypeEnum | str, int | None]:
         return self.parse_type(sql_type)

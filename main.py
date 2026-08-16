@@ -282,44 +282,23 @@ print("\n" + "=" * 70)
 print("INDEXES — create_index / drop_index")
 print("=" * 70)
 
-# The simplest form: one column, named explicitly.
 db.create_index("users", "idx_users_name").columns("name").execute()
-
-# Several columns, in the order they should be indexed in.
 db.create_index("users", "idx_users_name_age").columns(["name", "age"]).execute()
-
-# column() adds one at a time, for when the list is built up rather than known.
 db.create_index("posts", "idx_posts_user_title").column("user_id").column("title").execute()
-
-# unique() makes it a UNIQUE INDEX — a constraint SQLite will happily enforce
-# even though it refuses to ALTER one onto an existing table.
 db.create_index("users", "idx_users_email_unique").columns("email").unique().execute()
-
-# if_not_exists() where the engine supports it. PostgreSQL needs 9.5+, SQLite
-# always has it, and MySQL only offers it on MariaDB 10.1.4+ -- it raises a
-# QueryError elsewhere rather than emitting SQL the server would reject.
 db.create_index("users", "idx_users_age").columns("age").if_not_exists().execute()
-
-# The table facade carries the table name for you, so the index is one call.
 db.table("users").create_index("idx_users_updated", "updated_at").execute()
 
-# to_sql() renders without running, which is what the migration tooling wants.
 print("\nRendered without executing:")
 print("  " + db.create_index("posts", "idx_posts_body").columns("body").unique().to_sql())
 
-# Indexes are not part of describe_table() -- it reports the constraints a table
-# declares, and a standalone index is not one of them. So idx_users_email_unique
-# is absent below even though it is a UNIQUE index: only the table's own
-# unique_constraint() shows up.
 print("\nUnique constraints on 'users' (note: no idx_users_email_unique):")
 for unique in db.describe_table("users").constraints.unique:
     print(f"  {unique.name} {unique.columns}")
 
-# Dropping. if_exists() keeps a migration re-runnable.
 db.drop_index("users", "idx_users_name_age").if_exists().execute()
 db.table("users").drop_index("idx_users_updated").execute()
 
-# An index this dialect never created: without if_exists() the engine objects.
 try:
     db.drop_index("users", "idx_that_was_never_there").execute()
 except Exception as e:
