@@ -11,14 +11,17 @@ if TYPE_CHECKING:
     from flowmaticdb.dialects import DialectABC
     from flowmaticdb.query import (
         AlterTableQuery,
+        CreateIndexQuery,
         CreateTableQuery,
         DeleteQuery,
+        DropIndexQuery,
         DropTableQuery,
         InsertQuery,
         SelectQuery,
         UpdateQuery,
         WhereGroup,
     )
+    from flowmaticdb.query.ddl import TableDescription
 
 
 def _single_result(result: ResultABC | list[ResultABC]) -> ResultABC:
@@ -129,6 +132,15 @@ class Table:
 
     def drop_if_exists(self) -> DropTableQuery:
         return self.drop().if_exists()
+
+    def create_index(self, name: str, columns: str | list[Any]) -> CreateIndexQuery:
+        return self._database.create_index(self._table, name).columns(columns)
+
+    def drop_index(self, name: str) -> DropIndexQuery:
+        return self._database.drop_index(self._table, name)
+
+    def describe(self) -> TableDescription:
+        return self._database.describe_table(self._table)
 
     def columns(self) -> list[str]:
         columns = self.select().limit(0).execute().columns()

@@ -238,7 +238,7 @@ def test_mysql_type_mapping(mysql_dialect: MySQLDialect) -> None:
 def test_mysql_type_datetime_clamps_fractional_seconds_precision(mysql_dialect: MySQLDialect) -> None:
     """Reviewed deviation from MySQLDialect.php:237: MySQL's fractional-
     seconds precision (fsp) is only valid in 0-6, but callers pass
-    `bits`-style sizes elsewhere in this API (e.g. 32, 64). A faithful port
+    bit-width sizes elsewhere in this API (e.g. 32, 64). A faithful port
     of the PHP `sprintf('DATETIME(%d)', $size)` would emit invalid SQL like
     DATETIME(64); size is clamped to MySQL's real maximum of 6 instead."""
     assert mysql_dialect.type(TypeEnum.DATETIME, None) == "DATETIME"
@@ -256,7 +256,7 @@ def test_mysql_current_timestamp_default_matches_column_precision(
     column with a fractional seconds part -- `DATETIME(6) DEFAULT
     CURRENT_TIMESTAMP` raises error 1067 "Invalid default value". The default's
     fsp is matched to the column's instead."""
-    col = Column(name="updated_at", type=TypeEnum.DATETIME, bits=6, default=CurrentTimestamp())
+    col = Column(name="updated_at", type=TypeEnum.DATETIME, size=6, default=CurrentTimestamp())
     assert mysql_dialect._build_column(col) == "`updated_at` DATETIME(6) DEFAULT CURRENT_TIMESTAMP(6)"
 
     col = Column(name="updated_at", type="TIMESTAMP(3)", default=CurrentTimestamp())
@@ -271,7 +271,7 @@ def test_mysql_current_timestamp_default_left_alone_without_precision(
     col = Column(name="created_at", type=TypeEnum.DATETIME, default=CurrentTimestamp())
     assert mysql_dialect._build_column(col) == "`created_at` DATETIME DEFAULT CURRENT_TIMESTAMP"
 
-    col = Column(name="created_at", type=TypeEnum.STRING, bits=6, default=CurrentTimestamp())
+    col = Column(name="created_at", type=TypeEnum.STRING, size=6, default=CurrentTimestamp())
     assert mysql_dialect._build_column(col) == "`created_at` VARCHAR(6) DEFAULT CURRENT_TIMESTAMP"
 
 
@@ -454,8 +454,8 @@ def test_mysql_create_table(mysql_dialect: MySQLDialect) -> None:
         table="users",
         columns=[
             Column(name="id", type=TypeEnum.INT, auto_increment=True),
-            Column(name="name", type=TypeEnum.STRING, bits=100, not_null=True),
-            Column(name="email", type=TypeEnum.STRING, bits=255),
+            Column(name="name", type=TypeEnum.STRING, size=100, not_null=True),
+            Column(name="email", type=TypeEnum.STRING, size=255),
         ],
     )
     query = qwp.query

@@ -10,7 +10,7 @@ from flowmaticdb.query.enums import TypeEnum
 class Column:
     name: str
     type: TypeEnum | str
-    bits: int | None = None
+    size: int | None = None
     not_null: bool = False
     default: Any = None
     auto_increment: bool = False

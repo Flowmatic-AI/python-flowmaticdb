@@ -52,6 +52,107 @@ class SQLiteDialect(SQLDialect):
 
         return super().create_table(if_not_exists, table, columns, filtered_primary_keys, constraints)
 
+    def create_index(
+        self,
+        if_not_exists: bool,
+        name: str | list[str],
+        table: Any,
+        columns: list[Any],
+        unique: bool = False,
+    ) -> QueryWithParams:
+        # SQLite qualifies the index and leaves the table bare -- the exact
+        # mirror of PostgreSQL and MySQL, which reject a qualified index name
+        # and take the schema on the table instead.
+        _, table_name = self._schema_and_table(table)
+        return super().create_index(if_not_exists, self._index_name(name, table), table_name, columns, unique)
+
+    def list_tables(self, schema: str) -> QueryWithParams:
+        # SQLite has no schemas, so the requested one is ignored. The internal
+        # sqlite_ tables (sqlite_sequence, sqlite_stat1, ...) are not the
+        # caller's, so they stay out of the listing.
+        query = (
+            "SELECT m.name AS table_name"
+            " FROM sqlite_master m"
+            " WHERE m.type = 'table' AND SUBSTR(m.name, 1, 7) <> 'sqlite_'"
+            " ORDER BY m.name"
+        )
+
+        return QueryWithParams(query=query)
+
+    def describe_table_columns(self, table: Any) -> QueryWithParams:
+        schema, name = self._schema_and_table(table)
+
+        master = "sqlite_master" if schema is None else f"{self.escape_identifier(schema)}.sqlite_master"
+        table_info = "pragma_table_info(?)" if schema is None else "pragma_table_info(?, ?)"
+        params: list[Any] = [name, name] if schema is None else [name, name, schema]
+
+        query = (
+            "SELECT"
+            " ti.name AS column_name,"
+            " ti.type AS column_type,"
+            ' ti."notnull" AS not_null,'
+            " ti.dflt_value AS default_expression,"
+            # SQLite has no catalog flag for AUTOINCREMENT -- the keyword only
+            # survives in the stored CREATE TABLE statement.
+            " CASE WHEN ti.pk = 1 AND UPPER(ti.type) = 'INTEGER' AND EXISTS ("
+            f" SELECT 1 FROM {master} m"
+            " WHERE m.type = 'table' AND m.name = ? AND INSTR(UPPER(m.sql), 'AUTOINCREMENT') > 0"
+            " ) THEN 1 ELSE 0 END AS auto_increment"
+            f" FROM {table_info} AS ti"
+            " ORDER BY ti.cid"
+        )
+
+        return QueryWithParams(query=query, params=params)
+
+    def describe_table_constraints(self, table: Any) -> QueryWithParams:
+        schema, name = self._schema_and_table(table)
+
+        params: list[Any]
+        if schema is None:
+            index_list = "pragma_index_list(?)"
+            index_info = "pragma_index_info(il.name)"
+            foreign_key_list = "pragma_foreign_key_list(?)"
+            params = [name, name]
+        else:
+            index_list = "pragma_index_list(?, ?)"
+            index_info = "pragma_index_info(il.name, ?)"
+            foreign_key_list = "pragma_foreign_key_list(?, ?)"
+            params = [name, schema, schema, name, schema]
+
+        # origin 'u' is an index SQLite built for a UNIQUE constraint; 'c' is a
+        # standalone CREATE INDEX and 'pk' the primary key, neither of which is
+        # a constraint the table declared. Foreign keys carry no name at all.
+        query = (
+            "SELECT"
+            " 'u:' || il.name AS constraint_id,"
+            " il.name AS constraint_name,"
+            " 'UNIQUE' AS constraint_type,"
+            " ii.name AS column_name,"
+            " ii.seqno + 1 AS column_position,"
+            " NULL AS ref_table,"
+            " NULL AS ref_column,"
+            " NULL AS on_delete,"
+            " NULL AS on_update"
+            f" FROM {index_list} AS il"
+            f" JOIN {index_info} AS ii"
+            ' WHERE il."unique" = 1 AND il.origin = \'u\''
+            " UNION ALL"
+            " SELECT"
+            " 'f:' || fk.id,"
+            " NULL,"
+            " 'FOREIGN KEY',"
+            ' fk."from",'
+            " fk.seq + 1,"
+            ' fk."table",'
+            ' fk."to",'
+            " fk.on_delete,"
+            " fk.on_update"
+            f" FROM {foreign_key_list} AS fk"
+            " ORDER BY 1, 5"
+        )
+
+        return QueryWithParams(query=query, params=params)
+
     @staticmethod
     def _like_to_glob(like_pattern: str) -> str:
         glob_escape: dict[str, str | int | None] = {"*": "[*]", "?": "[?]", "[": "[[]", "]": "[]]"}
@@ -149,9 +250,28 @@ class SQLiteDialect(SQLDialect):
     def _build_alter_table_drop_constraint(self, alter: DropConstraint) -> str:
         raise QueryError("Constraint alteration (drop_constraint) is not supported by SQLite")
 
-    def type(self, type_enum: TypeEnum, bits: int | None = None) -> str:
+    def parse_column_type(self, sql_type: str, auto_increment: bool) -> tuple[TypeEnum | str, int | None]:
+        parsed_type, size = super().parse_column_type(sql_type, auto_increment)
+
+        # _build_column() renders every identity column as INTEGER PRIMARY KEY
+        # AUTOINCREMENT whatever its width, and that rowid alias is a 64-bit
+        # integer, so the declared INTEGER says nothing about the width here.
+        if auto_increment and parsed_type == TypeEnum.INT:
+            return parsed_type, 64
+
+        return parsed_type, size
+
+    def _parse_type_name(self, name: str, size: int | None) -> tuple[TypeEnum, int | None] | None:
+        # REAL is the only float SQLite renders, at any width, so it answers
+        # with the width the float() builder defaults to.
+        if name == "real":
+            return TypeEnum.FLOAT, 64
+
+        return super()._parse_type_name(name, size)
+
+    def type(self, type_enum: TypeEnum, size: int | None = None) -> str:
         if type_enum == TypeEnum.BOOL:
             return "BOOLEAN"
         if type_enum == TypeEnum.FLOAT:
             return "REAL"
-        return super().type(type_enum, bits)
+        return super().type(type_enum, size)

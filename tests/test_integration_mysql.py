@@ -24,7 +24,7 @@ from typing import Any, cast
 
 import pytest
 
-from flowmaticdb import QueryWithParams
+from flowmaticdb import QueryError, QueryWithParams
 from flowmaticdb.adapters import MySQLAdapter
 from flowmaticdb.database import DB
 from flowmaticdb.dialects import MySQLDialect
@@ -1062,7 +1062,7 @@ def test_mysql_datetime_and_json_columns(
         table="docs",
         columns=[
             Column(name="id", type=TypeEnum.INT, auto_increment=True, not_null=True),
-            Column(name="happened_at", type=TypeEnum.DATETIME, bits=6),
+            Column(name="happened_at", type=TypeEnum.DATETIME, size=6),
             Column(name="payload", type=TypeEnum.JSON),
         ],
         primary_keys=["id"],
@@ -1212,3 +1212,176 @@ def test_mysql_connection_limit(_flowmaticdb_database: None) -> None:
     db.exec("DROP TABLE `capped`")
     db.close()
     assert db.adapter.connection_count() == 0
+
+
+def _introspection_schema(db: DB) -> None:
+    """(Re)create the roles/users pair the introspection tests describe."""
+    db.exec("DROP TABLE IF EXISTS `intro_users`")
+    db.exec("DROP TABLE IF EXISTS `intro_roles`")
+
+    db.create_table("intro_roles").identity("id").string("code", 10, not_null=True).execute()
+    db.create_table("intro_users") \
+        .identity("id") \
+        .string("name", 64, not_null=True, default="anon") \
+        .string("email", 120) \
+        .integer("role_id") \
+        .unique_constraint(["email"], name="intro_users_email_key") \
+        .unique_constraint(["name", "email"], name="intro_users_pair_key") \
+        .foreign_key_constraint(
+            "role_id",
+            "intro_roles",
+            "id",
+            name="intro_users_role_fk",
+            referential_actions=["ON DELETE CASCADE", "ON UPDATE SET NULL"],
+        ) \
+        .execute()
+
+
+def test_mysql_describe_table(
+    mysql_adapter: MySQLAdapter, mysql_dialect: MySQLDialect
+) -> None:
+    """describe_table() reads columns and constraints out of information_schema."""
+    db = DB(mysql_adapter, mysql_dialect)
+    _introspection_schema(db)
+
+    description = db.describe_table("intro_users")
+
+    assert [column.name for column in description.columns] == ["id", "name", "email", "role_id"]
+    assert description.columns[0].auto_increment is True
+    assert description.columns[0].default is None
+    assert description.columns[1].not_null is True
+    assert description.columns[1].type == TypeEnum.STRING
+    assert description.columns[1].size == 64
+    assert description.columns[1].default == "anon"
+    assert description.columns[2].not_null is False
+
+    unique = {constraint.name: constraint.columns for constraint in description.constraints.unique}
+    assert unique == {
+        "intro_users_email_key": ["email"],
+        "intro_users_pair_key": ["name", "email"],
+    }
+
+    assert len(description.constraints.foreign_keys) == 1
+    foreign_key = description.constraints.foreign_keys[0]
+    assert foreign_key.name == "intro_users_role_fk"
+    assert foreign_key.columns == ["role_id"]
+    assert foreign_key.ref_table == "intro_roles"
+    assert foreign_key.ref_columns == ["id"]
+    assert foreign_key.on_delete == "CASCADE"
+    assert foreign_key.on_update == "SET NULL"
+
+    assert db.describe_table([MYSQL_DATABASE, "intro_users"]).columns == description.columns
+    assert db.describe_table("no_such_table").columns == []
+
+
+def test_mysql_list_tables(
+    mysql_adapter: MySQLAdapter, mysql_dialect: MySQLDialect
+) -> None:
+    """list_tables() reports the connected database and ignores the schema."""
+    db = DB(mysql_adapter, mysql_dialect)
+    _introspection_schema(db)
+
+    assert db.list_tables() == ["intro_roles", "intro_users"]
+    assert db.list_tables("public") == db.list_tables()
+
+
+def test_mysql_create_and_drop_index(
+    mysql_adapter: MySQLAdapter, mysql_dialect: MySQLDialect
+) -> None:
+    """CREATE/DROP INDEX round-trip; MySQL rejects the IF (NOT) EXISTS guards."""
+    db = DB(mysql_adapter, mysql_dialect)
+    _introspection_schema(db)
+
+    db.create_index("intro_users", "idx_intro_users_name").columns("name").execute()
+
+    indexes = db.prepared(
+        "SELECT INDEX_NAME FROM information_schema.STATISTICS "
+        "WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ?",
+        ["intro_users"],
+    ).scalars()
+    assert "idx_intro_users_name" in indexes
+
+    with pytest.raises(QueryError):
+        db.create_index("intro_users", "idx_other").columns("name").if_not_exists().execute()
+
+    with pytest.raises(QueryError):
+        db.drop_index("intro_users", "idx_intro_users_name").if_exists().execute()
+
+    db.drop_index("intro_users", "idx_intro_users_name").execute()
+
+    indexes = db.prepared(
+        "SELECT INDEX_NAME FROM information_schema.STATISTICS "
+        "WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ?",
+        ["intro_users"],
+    ).scalars()
+    assert "idx_intro_users_name" not in indexes
+
+
+def test_mysql_index_and_describe_with_a_qualified_table(
+    mysql_adapter: MySQLAdapter, mysql_dialect: MySQLDialect
+) -> None:
+    """A database-qualified table reaches both the index grammar and introspection."""
+    db = DB(mysql_adapter, mysql_dialect)
+    table = [MYSQL_DATABASE, "qual_metrics"]
+
+    db.exec(f"DROP TABLE IF EXISTS `{MYSQL_DATABASE}`.`qual_metrics`")
+    db.create_table(table).identity("id").string("kind", 32, not_null=True).execute()
+
+    db.create_index(table, "idx_qual_kind").columns("kind").execute()
+
+    indexes = db.prepared(
+        "SELECT INDEX_NAME FROM information_schema.STATISTICS "
+        "WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ?",
+        [MYSQL_DATABASE, "qual_metrics"],
+    ).scalars()
+    assert "idx_qual_kind" in indexes
+
+    description = db.describe_table(table)
+    assert [column.name for column in description.columns] == ["id", "kind"]
+    assert description.columns[0].auto_increment is True
+
+    db.drop_index(table, "idx_qual_kind").execute()
+
+    indexes = db.prepared(
+        "SELECT INDEX_NAME FROM information_schema.STATISTICS "
+        "WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ?",
+        [MYSQL_DATABASE, "qual_metrics"],
+    ).scalars()
+    assert "idx_qual_kind" not in indexes
+
+
+def test_mysql_describe_table_recovers_every_type_enum(
+    mysql_adapter: MySQLAdapter, mysql_dialect: MySQLDialect
+) -> None:
+    """A column declared through the builders describes back as it was declared.
+
+    MySQL keeps every width, DATETIME(6) precision included.
+    """
+    db = DB(mysql_adapter, mysql_dialect)
+    db.exec("DROP TABLE IF EXISTS `spread_types`")
+    db.create_table("spread_types") \
+        .identity("id") \
+        .boolean("flag") \
+        .integer("n32", 32).integer("n64", 64) \
+        .float("f32", 32).float("f64", 64) \
+        .string("s64", 64).string("s255").text("body") \
+        .datetime("seen_at").json("payload") \
+        .execute()
+
+    columns = db.describe_table("spread_types").columns
+
+    assert [(column.name, column.type, column.size) for column in columns] == [
+        ("id", TypeEnum.INT, 64),
+        ("flag", TypeEnum.BOOL, None),
+        ("n32", TypeEnum.INT, 32),
+        ("n64", TypeEnum.INT, 64),
+        ("f32", TypeEnum.FLOAT, 32),
+        ("f64", TypeEnum.FLOAT, 64),
+        ("s64", TypeEnum.STRING, 64),
+        ("s255", TypeEnum.STRING, 255),
+        # text() asks for the widest string there is; on MySQL that is LONGTEXT,
+        # which is bounded, so what comes back is that bound.
+        ("body", TypeEnum.STRING, 4294967295),
+        ("seen_at", TypeEnum.DATETIME, 6),
+        ("payload", TypeEnum.JSON, None),
+    ]

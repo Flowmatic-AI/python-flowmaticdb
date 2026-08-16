@@ -12,6 +12,7 @@ from flowmaticdb.query.ddl._foreign_key_constraint import ForeignKeyConstraint
 from flowmaticdb.query.ddl._raw_alter import RawAlter
 from flowmaticdb.query.ddl._raw_constraint import RawConstraint
 from flowmaticdb.query.ddl._rename_column import RenameColumn
+from flowmaticdb.query.ddl._table_description import TableConstraints, TableDescription
 from flowmaticdb.query.ddl._unique_constraint import UniqueConstraint
 
 __all__ = [
@@ -29,5 +30,7 @@ __all__ = [
     "RawAlter",
     "RawConstraint",
     "RenameColumn",
+    "TableConstraints",
+    "TableDescription",
     "UniqueConstraint",
 ]

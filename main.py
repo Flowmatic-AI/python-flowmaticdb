@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import datetime
 import time
+from pprint import pprint
 
 from flowmaticdb.database import DB
 from flowmaticdb.query.enums import ReferentialActionEnum
@@ -21,7 +22,7 @@ db = DB.connect_sqlite(":memory:", debug_callback=debug_callback, max_concurrent
 # db = DB.connect_postgresql("postgres", host="localhost", user="postgres", debug_callback=debug_callback, asyncpg_adapter=False)
 # db = DB.connect_mysql("flowmaticdb", host="localhost", user="root", password="", debug_callback=debug_callback)
 
-db.create_table("users").if_not_exists().identity("id").string("name", not_null=True).integer("age").current_timestamp("updated_at").datetime('created_at').execute()
+db.create_table("users").if_not_exists().identity("id").string("name", not_null=True).integer("age").current_timestamp("updated_at").datetime('created_at').text("always filled in text", True, "no way").column("test_columm", "VECTOR").unique_constraint(["id"], "test_unique").execute()
 
 db.create_table("posts").if_not_exists().identity("id").string("title", not_null=True).text("body").integer("user_id").foreign_key_constraint("user_id", "users", "id", referential_actions=[ReferentialActionEnum.ON_DELETE_CASCADE]).execute()
 
@@ -272,6 +273,9 @@ print(f"\n{'-' * 70}")
 print(f"GENERATED SQL:")
 print(bigQuery.to_sql())
 print(f"{'-' * 70}\n")
+
+pprint(db.describe_table("users"))
+pprint(db.describe_table("posts"))
 
 print("\nDropping 'posts' table...")
 db.drop_table("posts").if_exists().execute()

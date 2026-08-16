@@ -33,6 +33,12 @@ from flowmaticdb.query.expressions import Alias, Excluded, PostgresArray, Raw, S
 
 _TRAILING_ZEROS = re.compile(r"(\.[0-9]+?)0+$")
 
+# A declared type as an engine reports it: a name that may run to several words
+# ("double precision", "timestamp with time zone") optionally followed by a
+# precision, itself optionally followed by a scale -- VARCHAR(64), DATETIME(6),
+# DECIMAL(30, 15).
+_DECLARED_TYPE = re.compile(r"^\s*([A-Za-z][A-Za-z0-9 ]*?)\s*(?:\(\s*(\d+)\s*(?:,\s*\d+\s*)?\))?\s*$")
+
 
 def _format_float_for_query(value: float) -> str:
     formatted = f"{value:.53f}"
@@ -62,6 +68,8 @@ class SQLDialect(DialectABC):
         self.savepoints = True
         self.json = True
         self.jsonb = False
+        self.index_if_not_exists = True
+        self.index_if_exists = True
         self.generated_by_default_as_identity = True
         self.escape_identifier_char = '"'
         self.escape_string_char = "'"
@@ -696,7 +704,7 @@ class SQLDialect(DialectABC):
 
         sql_type = col.type
         if isinstance(sql_type, TypeEnum):
-            sql_type = self.type(sql_type, col.bits)
+            sql_type = self.type(sql_type, col.size)
         parts.append(sql_type)
 
         if col.not_null:
@@ -820,6 +828,156 @@ class SQLDialect(DialectABC):
             return QueryWithParams(query=f"DROP TABLE IF EXISTS {table_str}")
         return QueryWithParams(query=f"DROP TABLE {table_str}")
 
+    def create_index(
+        self,
+        if_not_exists: bool,
+        name: str | list[str],
+        table: Any,
+        columns: list[Any],
+        unique: bool = False,
+    ) -> QueryWithParams:
+        if not columns:
+            raise QueryError("CREATE INDEX requires at least one column")
+
+        query_parts = ["CREATE "]
+
+        if unique:
+            query_parts.append("UNIQUE ")
+
+        query_parts.append("INDEX ")
+
+        if if_not_exists:
+            if not self.index_if_not_exists:
+                raise QueryError("CREATE INDEX IF NOT EXISTS is not supported by this dialect")
+            query_parts.append("IF NOT EXISTS ")
+
+        query_parts.append(self.escape_identifier(name))
+        query_parts.append(f" ON {self._table_name(table)}")
+        query_parts.append(f" ({', '.join(self.escape_identifier(c) for c in columns)})")
+
+        return QueryWithParams(query="".join(query_parts))
+
+    def drop_index(self, if_exists: bool, name: str | list[str], table: Any) -> QueryWithParams:
+        query_parts = ["DROP INDEX "]
+
+        if if_exists:
+            if not self.index_if_exists:
+                raise QueryError("DROP INDEX IF EXISTS is not supported by this dialect")
+            query_parts.append("IF EXISTS ")
+
+        query_parts.append(self.escape_identifier(self._index_name(name, table)))
+
+        return QueryWithParams(query="".join(query_parts))
+
+    def _index_name(self, name: str | list[str], table: Any) -> str | list[str]:
+        # An index always lives in its table's schema, so a bare index name
+        # inherits whatever schema the table was qualified with.
+        if isinstance(name, list):
+            return name
+
+        schema, _ = self._schema_and_table(table)
+        return name if schema is None else [schema, name]
+
+    def list_tables(self, schema: str) -> QueryWithParams:
+        params: list[Any] = []
+        schema_filter = self._schema_filter("t.table_schema", schema, params)
+
+        query = (
+            "SELECT t.table_name AS table_name"
+            " FROM information_schema.tables t"
+            f" WHERE t.table_type = 'BASE TABLE'{schema_filter}"
+            " ORDER BY t.table_name"
+        )
+
+        return QueryWithParams(query=query, params=params)
+
+    # Introspection queries return a fixed set of column aliases so a single
+    # parser can read every dialect: column rows are (column_name, column_type,
+    # not_null, default_expression, auto_increment) and constraint rows are
+    # (constraint_id, constraint_name, constraint_type, column_name,
+    # column_position, ref_table, ref_column, on_delete, on_update).
+    def describe_table_columns(self, table: Any) -> QueryWithParams:
+        schema, name = self._schema_and_table(table)
+        params: list[Any] = [name]
+        schema_filter = self._schema_filter("c.table_schema", schema, params)
+
+        query = (
+            "SELECT"
+            " c.column_name AS column_name,"
+            " c.data_type AS column_type,"
+            " CASE WHEN c.is_nullable = 'NO' THEN 1 ELSE 0 END AS not_null,"
+            " c.column_default AS default_expression,"
+            " CASE WHEN c.is_identity = 'YES' THEN 1 ELSE 0 END AS auto_increment"
+            " FROM information_schema.columns c"
+            f" WHERE c.table_name = ?{schema_filter}"
+            " ORDER BY c.ordinal_position"
+        )
+
+        return QueryWithParams(query=query, params=params)
+
+    def describe_table_constraints(self, table: Any) -> QueryWithParams:
+        schema, name = self._schema_and_table(table)
+        params: list[Any] = [name]
+        schema_filter = self._schema_filter("tc.table_schema", schema, params)
+
+        query = (
+            "SELECT"
+            " tc.constraint_name AS constraint_id,"
+            " tc.constraint_name AS constraint_name,"
+            " tc.constraint_type AS constraint_type,"
+            " kcu.column_name AS column_name,"
+            " kcu.ordinal_position AS column_position,"
+            " rkcu.table_name AS ref_table,"
+            " rkcu.column_name AS ref_column,"
+            " rc.delete_rule AS on_delete,"
+            " rc.update_rule AS on_update"
+            " FROM information_schema.table_constraints tc"
+            " JOIN information_schema.key_column_usage kcu"
+            " ON kcu.constraint_schema = tc.constraint_schema"
+            " AND kcu.constraint_name = tc.constraint_name"
+            " AND kcu.table_name = tc.table_name"
+            " LEFT JOIN information_schema.referential_constraints rc"
+            " ON rc.constraint_schema = tc.constraint_schema"
+            " AND rc.constraint_name = tc.constraint_name"
+            " LEFT JOIN information_schema.key_column_usage rkcu"
+            " ON rkcu.constraint_schema = rc.unique_constraint_schema"
+            " AND rkcu.constraint_name = rc.unique_constraint_name"
+            " AND rkcu.ordinal_position = kcu.position_in_unique_constraint"
+            f" WHERE tc.table_name = ?{schema_filter}"
+            " AND tc.constraint_type IN ('UNIQUE', 'FOREIGN KEY')"
+            " ORDER BY tc.constraint_name, kcu.ordinal_position"
+        )
+
+        return QueryWithParams(query=query, params=params)
+
+    # SQL rendering the introspection queries fall back on when the caller did
+    # not qualify the table with a schema. None means "do not filter at all".
+    default_schema_sql: ClassVar[str | None] = None
+
+    @staticmethod
+    def _schema_and_table(table: Any) -> tuple[str | None, str]:
+        if isinstance(table, list):
+            if len(table) == 1:
+                return None, str(table[0])
+            if len(table) == 2:
+                return str(table[0]), str(table[1])
+            raise QueryError("Table introspection expects a table name optionally qualified by one schema")
+
+        if isinstance(table, str):
+            return None, table
+
+        raise QueryError(f"Table introspection expects a table name, got: {type(table).__name__}")
+
+    def _schema_filter(self, column: str, schema: str | None, params: list[Any]) -> str:
+        if schema is not None:
+            params.append(schema)
+            return f" AND {column} = ?"
+
+        if self.default_schema_sql is not None:
+            return f" AND {column} = {self.default_schema_sql}"
+
+        return ""
+
     def _table_name(self, table: Any) -> str:
         return self.escape_identifier(table)
 
@@ -921,14 +1079,55 @@ class SQLDialect(DialectABC):
     def parse_json(self, value: Any) -> Any:
         return decode_json(value)
 
-    def type(self, type_enum: TypeEnum, bits: int | None = None) -> str:
-        size = bits or 0
+    def parse_type(self, sql_type: str) -> tuple[TypeEnum | str, int | None]:
+        match = _DECLARED_TYPE.match(sql_type)
+        if match is None:
+            return sql_type, None
+
+        name = " ".join(match.group(1).split()).lower()
+        size = int(match.group(2)) if match.group(2) is not None else None
+
+        parsed = self._parse_type_name(name, size)
+        if parsed is None:
+            return sql_type, None
+
+        return parsed
+
+    def _parse_type_name(self, name: str, size: int | None) -> tuple[TypeEnum, int | None] | None:
+        # The inverse of type(): each branch answers with the bit width that
+        # renders this very name again, so describe_table() -> create_table()
+        # is a round-trip. A name this dialect cannot produce is left alone by
+        # returning None, and reaches the caller as the raw string.
+        if name in ("boolean", "bool"):
+            return TypeEnum.BOOL, None
+        if name in ("smallint", "int2"):
+            return TypeEnum.INT, 16
+        if name in ("integer", "int", "int4"):
+            return TypeEnum.INT, 32
+        if name in ("bigint", "int8"):
+            return TypeEnum.INT, 64
+        if name in ("decimal", "numeric"):
+            return TypeEnum.FLOAT, 64 if (size or 0) > 15 else 32
+        if name in ("varchar", "character varying"):
+            # An unbounded VARCHAR is a TEXT by another name.
+            return TypeEnum.STRING, size if size is not None else sys.maxsize
+        if name == "text":
+            return TypeEnum.STRING, sys.maxsize
+        if name == "datetime":
+            return TypeEnum.DATETIME, size
+        if name in ("json", "jsonb"):
+            return TypeEnum.JSON, None
+
+        return None
+
+    def type(self, type_enum: TypeEnum, size: int | None = None) -> str:
+        width = size or 0
         mapping = {
             TypeEnum.BOOL: "BOOLEAN" if self.bool else "INTEGER",
-            TypeEnum.INT: "BIGINT" if size > 32 else "INTEGER",
-            TypeEnum.FLOAT: "DECIMAL(30, 15)" if size > 32 else "DECIMAL(15, 7)",
-            TypeEnum.STRING: "TEXT" if size > 255 else f"VARCHAR({bits or 255})",
+            TypeEnum.INT: "BIGINT" if width > 32 else "INTEGER",
+            TypeEnum.FLOAT: "DECIMAL(30, 15)" if width > 32 else "DECIMAL(15, 7)",
+            TypeEnum.STRING: "TEXT" if width > 255 else f"VARCHAR({size or 255})",
             TypeEnum.DATETIME: "DATETIME",
             TypeEnum.JSON: "JSON" if self.json else "TEXT",
         }
-        return mapping.get(type_enum, f"VARCHAR({bits or 255})")
+        return mapping.get(type_enum, f"VARCHAR({size or 255})")

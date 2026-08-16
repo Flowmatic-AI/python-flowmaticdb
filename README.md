@@ -582,16 +582,51 @@ for qwp in query.to_query_with_params():
 On MySQL each of those statements also commits implicitly, so a multi-step
 `alter_table()` cannot be rolled back halfway.
 
-### Indexes
-
-There is no index builder — indexes go through `exec()`:
+### CREATE INDEX / DROP INDEX
 
 ```python
-db.exec('CREATE INDEX IF NOT EXISTS "idx_posts_user_id" ON "posts" ("user_id")')
+# CREATE INDEX "idx_posts_user_id" ON "posts" ("user_id")
+db.create_index("posts", "idx_posts_user_id").columns("user_id").execute()
+
+# Multi-column, and UNIQUE
+db.create_index("posts", "idx_posts_pair").columns(["user_id", "created_at"]).execute()
+db.create_index("posts", "idx_posts_slug").columns("slug").unique().execute()
+
+# Guards
+db.create_index("posts", "idx_posts_user_id").columns("user_id").if_not_exists().execute()
+db.drop_index("posts", "idx_posts_user_id").if_exists().execute()
+
+# DROP INDEX "idx_posts_user_id"
+db.drop_index("posts", "idx_posts_user_id").execute()
 ```
 
-`IF NOT EXISTS` on an index is supported by PostgreSQL, SQLite and MariaDB but
-**not by MySQL**, which needs a catalog check instead:
+Both take the table first and the index name second. `columns()` replaces the
+column list, `column()` appends one; a column may be any identifier the dialect
+can escape, so `raw("lower(email)")` works on engines with expression indexes.
+
+**The index name is always a bare name — qualify the table, not the index.**
+An index lives in its table's schema on every engine, so the schema is taken
+from the table and each dialect puts it where its own grammar wants it:
+
+```python
+db.create_index(["reporting", "metrics"], "idx_metrics_seen").columns("seen_at").execute()
+
+# PostgreSQL / MySQL — the table carries the schema, the index name may not
+#   CREATE INDEX "idx_metrics_seen" ON "reporting"."metrics" ("seen_at")
+# SQLite — the mirror image: the index carries it and the table may not
+#   CREATE INDEX "reporting"."idx_metrics_seen" ON "metrics" ("seen_at")
+```
+
+`drop_index()` still takes the table because the engines disagree there too:
+**MySQL scopes an index name to its table** (`DROP INDEX \`idx\` ON \`posts\``),
+while PostgreSQL and SQLite scope it to the schema and take no table at all
+(`DROP INDEX "reporting"."idx_metrics_seen"`).
+
+`IF NOT EXISTS` / `IF EXISTS` on an index is supported by PostgreSQL (9.5 and
+8.2 respectively), SQLite and MariaDB >= 10.1.4, but **not by MySQL** — asking
+for it there raises `QueryError` rather than silently dropping the guard and
+handing the server a statement that fails on the second run. Do the catalog
+check yourself instead:
 
 ```python
 exists = db.prepared(
@@ -601,8 +636,9 @@ exists = db.prepared(
 ).scalar()
 ```
 
-Use `dialect.escape_identifier()` to quote names rather than hardcoding quotes,
-since PostgreSQL and SQLite use `"` while MySQL uses `` ` ``.
+A standalone index is not a constraint: `describe_table()` will not report a
+`CREATE UNIQUE INDEX` under `constraints.unique` on PostgreSQL or SQLite (MySQL
+makes no distinction between the two, so it does).
 
 ### DROP TABLE
 
@@ -902,9 +938,12 @@ table.create_if_not_exists(...)
 table.drop()
 table.drop_if_exists()
 table.truncate()
+table.create_index("idx_users_email", "email")
+table.drop_index("idx_users_email")
 
 # Introspection
 table.columns()     # list[str] — column names
+table.describe()    # TableDescription — see Schema Introspection
 table.is_empty()    # bool
 ```
 
@@ -913,6 +952,110 @@ table.is_empty()    # bool
 ```python
 table = db.table("users")
 ```
+
+---
+
+## Schema Introspection
+
+### `list_tables()`
+
+```python
+db.list_tables()             # ['posts', 'users'] — the "public" schema
+db.list_tables("reporting")  # another schema
+```
+
+Returns the base tables as a `list[str]`, sorted by name. Views and indexes are
+excluded; partitioned tables are included.
+
+**`schema` only applies to PostgreSQL.** SQLite has no schemas and MySQL calls
+its databases schemas, so both **ignore the argument** rather than failing —
+SQLite lists everything in `sqlite_master` (minus its own `sqlite_*` tables) and
+MySQL lists the connected database. Passing a schema name on those engines is
+harmless and changes nothing.
+
+### `describe_table()`
+
+```python
+description = db.describe_table("users")
+
+for column in description.columns:
+    print(column.name, column.type, column.not_null, column.default)
+
+for unique in description.constraints.unique:
+    print(unique.name, unique.columns)
+
+for foreign_key in description.constraints.foreign_keys:
+    print(foreign_key.columns, "->", foreign_key.ref_table, foreign_key.ref_columns)
+```
+
+Works on all three engines. Pass `["schema", "table"]` to look outside the
+default schema. An unknown table describes as empty rather than raising.
+
+`TableDescription` (`flowmaticdb.query.ddl`) holds:
+
+| Field | Type |
+|-------|------|
+| `columns` | `list[Column]` |
+| `constraints` | `TableConstraints` |
+| `constraints.unique` | `list[UniqueConstraint]` |
+| `constraints.foreign_keys` | `list[ForeignKeyConstraint]` |
+
+They are the same dataclasses the DDL builders take, and a described column
+comes back in the **same terms it was declared in** — `type` is a `TypeEnum`
+and `size` is the width, whatever the engine happened to call it:
+
+```python
+db.create_table("users").string("name", 255).integer("age", 64).execute()
+
+description.columns[1]   # Column(name='name', type=TypeEnum.STRING, size=255, ...)
+description.columns[2]   # Column(name='age',  type=TypeEnum.INT,    size=64,  ...)
+```
+
+`character varying(64)`, `varchar(64)` and `VARCHAR(64)` all read back as
+`(TypeEnum.STRING, 64)`. The mapping is `DialectABC.parse_type()`, the exact
+inverse of `DialectABC.type()`, so `dialect.type(*dialect.parse_type(s)) == s`
+for every type a dialect can render. A type it cannot render — `geometry`,
+`enum('a','b')` — is left alone and reaches you as the raw string, which
+`Column.type` allows (`TypeEnum | str`).
+
+Three widths cannot survive the trip, because the engine never stored them:
+
+| | Declared | Described |
+|---|---|---|
+| SQLite float | `float("f", 32)` | `(FLOAT, 64)` — SQLite has one float type, `REAL` |
+| PostgreSQL / SQLite datetime | `datetime("d", 6)` | `(DATETIME, None)` — neither keeps a precision |
+| MySQL `TINYINT` | `integer("n", 8)` | `(BOOL, None)` — MySQL has no boolean, so this dialect renders one as `TINYINT` |
+
+Everything else is exact on all three engines, identity columns included.
+
+The rest of a described column is still a **report, not a recipe**:
+
+- `default` is the raw catalog text, which is engine-shaped: PostgreSQL gives
+  an expression (`"'anon'::character varying"`), SQLite the literal as written
+  in the DDL (`"'anon'"`), MySQL the bare value (`'anon'`). Feeding it straight
+  back into `column(default=...)` is not a round-trip.
+- `auto_increment` is `True` for an identity, a `serial` and SQLite's
+  `INTEGER PRIMARY KEY AUTOINCREMENT`; `default` is then `None`, since the
+  sequence driving the column is not a default the table declared.
+- Referential actions come back spelled out (`'CASCADE'`, `'SET NULL'`,
+  `'NO ACTION'`) — every engine reports `'NO ACTION'` where the DDL said
+  nothing, so a described foreign key is never `None` there.
+- SQLite reports no name for a foreign key (`name is None`) and an
+  auto-generated one for a unique constraint (`sqlite_autoindex_users_1`),
+  because the engine keeps neither.
+- On SQLite, qualify an `ATTACH`ed table (`["reporting", "metrics"]`). A bare
+  name still resolves — SQLite searches `main`, then `temp`, then every
+  attached database — but the `AUTOINCREMENT` probe only reads `main`, so an
+  attached table described by its bare name comes back `auto_increment=False`.
+- Primary keys are not reported. Ask for the columns and read `auto_increment`,
+  or query the catalog directly.
+
+Under the hood each dialect renders two queries whose result columns are
+normalised, so one parser reads all three engines:
+`describe_table_columns()` and `describe_table_constraints()` on the dialect.
+PostgreSQL reads `pg_catalog` (and so needs 9.6 or newer for `to_regclass`),
+SQLite reads the `pragma_*` table-valued functions, MySQL and the base
+`SQLDialect` read `information_schema`.
 
 ---
 

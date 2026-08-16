@@ -137,7 +137,7 @@ db.alter_table("users").drop_constraint("uq_users_email").execute()
 db.drop_table("posts").if_exists().execute()
 ```
 
-`identity(name, bits=64, add_primary_key=True)` is the portable auto-increment
+`identity(name, size=64, add_primary_key=True)` is the portable auto-increment
 primary key; `serial()` and `auto_increment()` are aliases for the same builder.
 
 Column types map per dialect:

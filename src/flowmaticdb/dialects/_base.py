@@ -127,6 +127,38 @@ class DialectABC(ABC):
         ...
 
     @abstractmethod
+    def create_index(
+        self,
+        if_not_exists: bool,
+        name: str | list[str],
+        table: Any,
+        columns: list[Any],
+        unique: bool,
+    ) -> QueryWithParams:
+        ...
+
+    @abstractmethod
+    def drop_index(
+        self,
+        if_exists: bool,
+        name: str | list[str],
+        table: Any,
+    ) -> QueryWithParams:
+        ...
+
+    @abstractmethod
+    def list_tables(self, schema: str) -> QueryWithParams:
+        ...
+
+    @abstractmethod
+    def describe_table_columns(self, table: Any) -> QueryWithParams:
+        ...
+
+    @abstractmethod
+    def describe_table_constraints(self, table: Any) -> QueryWithParams:
+        ...
+
+    @abstractmethod
     def begin_transaction(self, name: str | None = None) -> QueryWithParams:
         ...
 
@@ -191,5 +223,14 @@ class DialectABC(ABC):
         ...
 
     @abstractmethod
-    def type(self, type_enum: TypeEnum, bits: int | None = None) -> str:
+    def type(self, type_enum: TypeEnum, size: int | None = None) -> str:
         ...
+
+    @abstractmethod
+    def parse_type(self, sql_type: str) -> tuple[TypeEnum | str, int | None]:
+        ...
+
+    # Concrete so a dialect only overrides it when its declared type loses
+    # width on an auto-incrementing column.
+    def parse_column_type(self, sql_type: str, auto_increment: bool) -> tuple[TypeEnum | str, int | None]:
+        return self.parse_type(sql_type)

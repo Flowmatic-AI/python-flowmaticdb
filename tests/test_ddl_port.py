@@ -27,21 +27,21 @@ from flowmaticdb.query.ddl import (
 from flowmaticdb.query.enums import ReferentialActionEnum, TypeEnum
 
 
-def test_create_table_integer_threads_bits_into_dialect_type(sql_dialect: SQLDialect, mock_db) -> None:
-    """CreateTableQuery.integer() dropped `bits` before reaching the column dict,
+def test_create_table_integer_threads_size_into_dialect_type(sql_dialect: SQLDialect, mock_db) -> None:
+    """CreateTableQuery.integer() dropped `size` before reaching the column dict,
     so every int column rendered with the dialect's default size (0) instead of
-    the requested one. bits=64 (the default, matching PHP) must yield BIGINT."""
+    the requested one. size=64 (the default, matching PHP) must yield BIGINT."""
     q = CreateTableQuery(sql_dialect, "widgets", database=mock_db)
-    q.integer("count", bits=64)
+    q.integer("count", size=64)
     sql = q.to_query_with_params().query
 
     assert "BIGINT" in sql
     assert '"count"' in sql
 
 
-def test_create_table_integer_small_bits_stays_integer(sql_dialect: SQLDialect, mock_db) -> None:
+def test_create_table_integer_small_size_stays_integer(sql_dialect: SQLDialect, mock_db) -> None:
     q = CreateTableQuery(sql_dialect, "widgets", database=mock_db)
-    q.integer("count", bits=32)
+    q.integer("count", size=32)
     sql = q.to_query_with_params().query
 
     assert "INTEGER" in sql
@@ -68,9 +68,9 @@ def test_create_table_text_uses_big_string_type(sql_dialect: SQLDialect, mock_db
     assert "VARCHAR" not in sql
 
 
-def test_alter_table_add_int_threads_bits(sql_dialect: SQLDialect, mock_db) -> None:
+def test_alter_table_add_int_threads_size(sql_dialect: SQLDialect, mock_db) -> None:
     q = AlterTableQuery(sql_dialect, "widgets", database=mock_db)
-    q.add_int("count", bits=64)
+    q.add_int("count", size=64)
     result = q.to_query_with_params()
 
     assert "BIGINT" in result[0].query
@@ -85,9 +85,9 @@ def test_alter_table_add_text_uses_big_string_type(sql_dialect: SQLDialect, mock
     assert "VARCHAR" not in result[0].query
 
 
-def test_create_table_float_threads_bits(sql_dialect: SQLDialect, mock_db) -> None:
+def test_create_table_float_threads_size(sql_dialect: SQLDialect, mock_db) -> None:
     q = CreateTableQuery(sql_dialect, "widgets", database=mock_db)
-    q.float("score", bits=64)
+    q.float("score", size=64)
     sql = q.to_query_with_params().query
 
     assert "DECIMAL(30, 15)" in sql
@@ -101,7 +101,7 @@ def test_create_table_date_time_threads_size(sql_dialect: SQLDialect, mock_db) -
     q.datetime("created_at", size=3)
     col = q._columns[0]
 
-    assert col.bits == 3
+    assert col.size == 3
 
 def test_create_table_identity_is_still_bigint_by_default(sql_dialect: SQLDialect, mock_db) -> None:
     q = CreateTableQuery(sql_dialect, "widgets", database=mock_db)

@@ -6,6 +6,7 @@ from collections.abc import Mapping
 from datetime import UTC, datetime
 from typing import Any, ClassVar
 
+from flowmaticdb._query_with_params import QueryWithParams
 from flowmaticdb.dialects._sql_dialect import SQLDialect
 from flowmaticdb.query import Condition, OnConflict
 from flowmaticdb.query.ddl import Column
@@ -40,6 +41,8 @@ class PostgresqlDialect(SQLDialect):
         self.datetime_format = "%Y-%m-%d %H:%M:%S.%f%z"
         self._version_gate()
 
+    default_schema_sql: ClassVar[str] = "current_schema"
+
     def _version_gate(self) -> None:
         v = self._version
         self.distinct_on = v >= 70200
@@ -49,6 +52,8 @@ class PostgresqlDialect(SQLDialect):
         self.returning = v >= 80200
         self.json = v >= 90200
         self.jsonb = v >= 90400
+        self.index_if_not_exists = v >= 90500
+        self.index_if_exists = v >= 80200
 
     def _build_on_conflict(
         self,
@@ -101,7 +106,7 @@ class PostgresqlDialect(SQLDialect):
 
         sql_type = col.type
         if isinstance(sql_type, TypeEnum):
-            sql_type = self.type(sql_type, col.bits)
+            sql_type = self.type(sql_type, col.size)
 
         type_is_uppercase = any(ch.isupper() for ch in sql_type)
         upper_type = sql_type.upper()
@@ -114,6 +119,73 @@ class PostgresqlDialect(SQLDialect):
 
         serial_col = dataclasses.replace(col, type=serial_type, auto_increment=False, default=None)
         return super()._build_column(serial_col)
+
+    def list_tables(self, schema: str) -> QueryWithParams:
+        query = (
+            "SELECT c.relname AS table_name"
+            " FROM pg_class c"
+            " JOIN pg_namespace n ON n.oid = c.relnamespace"
+            " WHERE n.nspname = ? AND c.relkind IN ('r', 'p')"
+            " ORDER BY c.relname"
+        )
+
+        return QueryWithParams(query=query, params=[schema])
+
+    def describe_table_columns(self, table: Any) -> QueryWithParams:
+        # attidentity only exists from PostgreSQL 10 on; before that an
+        # auto-incrementing column is always a serial, i.e. a nextval() default.
+        identity_sql = "a.attidentity <> ''" if self._version >= 100000 else "FALSE"
+
+        query = (
+            "SELECT"
+            " a.attname AS column_name,"
+            " format_type(a.atttypid, a.atttypmod) AS column_type,"
+            " a.attnotnull AS not_null,"
+            " pg_get_expr(d.adbin, d.adrelid) AS default_expression,"
+            f" ({identity_sql}"
+            " OR COALESCE(POSITION('nextval(' IN pg_get_expr(d.adbin, d.adrelid)) = 1, FALSE))"
+            " AS auto_increment"
+            " FROM pg_attribute a"
+            " LEFT JOIN pg_attrdef d ON d.adrelid = a.attrelid AND d.adnum = a.attnum"
+            " WHERE a.attrelid = to_regclass(?) AND a.attnum > 0 AND NOT a.attisdropped"
+            " ORDER BY a.attnum"
+        )
+
+        return QueryWithParams(query=query, params=[self._table_name(table)])
+
+    def describe_table_constraints(self, table: Any) -> QueryWithParams:
+        action = (
+            "CASE {column}"
+            " WHEN 'a' THEN 'NO ACTION'"
+            " WHEN 'r' THEN 'RESTRICT'"
+            " WHEN 'c' THEN 'CASCADE'"
+            " WHEN 'n' THEN 'SET NULL'"
+            " WHEN 'd' THEN 'SET DEFAULT'"
+            " END"
+        )
+
+        query = (
+            "SELECT"
+            " con.oid AS constraint_id,"
+            " con.conname AS constraint_name,"
+            " CASE con.contype WHEN 'u' THEN 'UNIQUE' ELSE 'FOREIGN KEY' END AS constraint_type,"
+            " att.attname AS column_name,"
+            " cols.ord AS column_position,"
+            " ref_cls.relname AS ref_table,"
+            " ref_att.attname AS ref_column,"
+            f" {action.format(column='con.confdeltype')} AS on_delete,"
+            f" {action.format(column='con.confupdtype')} AS on_update"
+            " FROM pg_constraint con"
+            " CROSS JOIN LATERAL unnest(con.conkey) WITH ORDINALITY AS cols(attnum, ord)"
+            " JOIN pg_attribute att ON att.attrelid = con.conrelid AND att.attnum = cols.attnum"
+            " LEFT JOIN pg_class ref_cls ON ref_cls.oid = con.confrelid"
+            " LEFT JOIN pg_attribute ref_att"
+            " ON ref_att.attrelid = con.confrelid AND ref_att.attnum = con.confkey[cols.ord::int]"
+            " WHERE con.conrelid = to_regclass(?) AND con.contype IN ('u', 'f')"
+            " ORDER BY con.conname, cols.ord"
+        )
+
+        return QueryWithParams(query=query, params=[self._table_name(table)])
 
     def cast_to_query(self, value: Any) -> str:
         if isinstance(value, bool):
@@ -154,12 +226,23 @@ class PostgresqlDialect(SQLDialect):
                 pass
         return super().parse_datetime(value)
 
-    def type(self, type_enum: TypeEnum, bits: int | None = None) -> str:
-        size = bits or 0
+    def _parse_type_name(self, name: str, size: int | None) -> tuple[TypeEnum, int | None] | None:
+        if name == "double precision":
+            return TypeEnum.FLOAT, 64
+        if name == "real":
+            return TypeEnum.FLOAT, 32
+        # format_type() spells TIMESTAMPTZ out in full.
+        if name in ("timestamptz", "timestamp with time zone", "timestamp without time zone", "timestamp"):
+            return TypeEnum.DATETIME, size
+
+        return super()._parse_type_name(name, size)
+
+    def type(self, type_enum: TypeEnum, size: int | None = None) -> str:
+        width = size or 0
         if type_enum == TypeEnum.FLOAT:
-            return "DOUBLE PRECISION" if size > 32 else "REAL"
+            return "DOUBLE PRECISION" if width > 32 else "REAL"
         if type_enum == TypeEnum.DATETIME:
             return "TIMESTAMPTZ"
         if type_enum == TypeEnum.JSON and self.jsonb:
             return "JSONB"
-        return super().type(type_enum, bits)
+        return super().type(type_enum, size)

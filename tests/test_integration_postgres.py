@@ -16,6 +16,7 @@ from __future__ import annotations
 import asyncio
 import importlib.util
 import socket
+import sys
 from collections.abc import Iterator
 from datetime import datetime
 from typing import Any
@@ -1253,3 +1254,182 @@ def test_postgres_asyncpg_connection_limit() -> None:
         acquire_connection_timeout=60.0,
     )
     _capped_workload(db, "capped_asyncpg")
+
+
+def _introspection_schema(db: DB) -> None:
+    """(Re)create the roles/users pair the introspection tests describe."""
+    db.exec('DROP TABLE IF EXISTS "intro_users" CASCADE')
+    db.exec('DROP TABLE IF EXISTS "intro_roles" CASCADE')
+
+    db.create_table("intro_roles").identity("id").string("code", 10, not_null=True).execute()
+    db.create_table("intro_users") \
+        .identity("id") \
+        .string("name", 64, not_null=True, default="anon") \
+        .string("email", 120) \
+        .integer("role_id") \
+        .unique_constraint(["email"], name="intro_users_email_key") \
+        .unique_constraint(["name", "email"], name="intro_users_pair_key") \
+        .foreign_key_constraint(
+            "role_id",
+            "intro_roles",
+            "id",
+            name="intro_users_role_fk",
+            referential_actions=["ON DELETE CASCADE", "ON UPDATE SET NULL"],
+        ) \
+        .execute()
+
+
+def test_postgres_list_tables(pg_db: DB) -> None:
+    """list_tables() reports the tables of the requested schema."""
+    _introspection_schema(pg_db)
+
+    tables = pg_db.list_tables()
+
+    assert "intro_users" in tables
+    assert "intro_roles" in tables
+    assert pg_db.list_tables("pg_catalog") != tables
+    assert pg_db.list_tables("no_such_schema") == []
+
+    pg_db.exec('DROP TABLE IF EXISTS "intro_users" CASCADE')
+    pg_db.exec('DROP TABLE IF EXISTS "intro_roles" CASCADE')
+
+
+def test_postgres_describe_table(pg_db: DB) -> None:
+    """describe_table() reads columns and constraints out of pg_catalog."""
+    _introspection_schema(pg_db)
+
+    description = pg_db.describe_table("intro_users")
+
+    assert [column.name for column in description.columns] == ["id", "name", "email", "role_id"]
+    assert description.columns[0].auto_increment is True
+    assert description.columns[0].default is None
+    assert description.columns[1].not_null is True
+    assert description.columns[1].type == TypeEnum.STRING
+    assert description.columns[1].size == 64
+    assert description.columns[1].default is not None
+    assert description.columns[2].not_null is False
+
+    unique = {constraint.name: constraint.columns for constraint in description.constraints.unique}
+    assert unique == {
+        "intro_users_email_key": ["email"],
+        "intro_users_pair_key": ["name", "email"],
+    }
+
+    assert len(description.constraints.foreign_keys) == 1
+    foreign_key = description.constraints.foreign_keys[0]
+    assert foreign_key.name == "intro_users_role_fk"
+    assert foreign_key.columns == ["role_id"]
+    assert foreign_key.ref_table == "intro_roles"
+    assert foreign_key.ref_columns == ["id"]
+    assert foreign_key.on_delete == "CASCADE"
+    assert foreign_key.on_update == "SET NULL"
+
+    assert pg_db.describe_table(["public", "intro_users"]).columns == description.columns
+    assert pg_db.describe_table("no_such_table").columns == []
+
+    pg_db.exec('DROP TABLE IF EXISTS "intro_users" CASCADE')
+    pg_db.exec('DROP TABLE IF EXISTS "intro_roles" CASCADE')
+
+
+def test_postgres_create_and_drop_index(pg_db: DB) -> None:
+    """CREATE/DROP INDEX round-trip, including the IF (NOT) EXISTS guards."""
+    _introspection_schema(pg_db)
+
+    pg_db.create_index("intro_users", "idx_intro_users_role").columns("role_id").if_not_exists().execute()
+    pg_db.create_index("intro_users", "idx_intro_users_role").columns("role_id").if_not_exists().execute()
+
+    indexes = pg_db.prepared(
+        "SELECT indexname FROM pg_indexes WHERE tablename = ?",
+        ["intro_users"],
+    ).scalars()
+    assert "idx_intro_users_role" in indexes
+
+    pg_db.create_index("intro_users", "idx_intro_users_name").columns(["name", "email"]).unique().execute()
+
+    pg_db.drop_index("intro_users", "idx_intro_users_role").if_exists().execute()
+    pg_db.drop_index("intro_users", "idx_intro_users_role").if_exists().execute()
+    pg_db.drop_index("intro_users", "idx_intro_users_name").execute()
+
+    pg_db.exec('DROP TABLE IF EXISTS "intro_users" CASCADE')
+    pg_db.exec('DROP TABLE IF EXISTS "intro_roles" CASCADE')
+
+
+def test_postgres_index_and_describe_in_another_schema(pg_db: DB) -> None:
+    """A schema-qualified table drives both the index grammar and introspection.
+
+    PostgreSQL rejects a qualified index name on CREATE INDEX (the index lands
+    in its table's schema) but accepts one on DROP INDEX, so the dialect has to
+    place the schema differently in each statement.
+    """
+    pg_db.exec("DROP SCHEMA IF EXISTS reporting CASCADE")
+    pg_db.exec("CREATE SCHEMA reporting")
+    try:
+        pg_db.create_table(["reporting", "metrics"]) \
+            .identity("id") \
+            .string("kind", 32, not_null=True) \
+            .datetime("seen_at") \
+            .unique_constraint(["kind"], name="metrics_kind_key") \
+            .execute()
+
+        assert pg_db.list_tables("reporting") == ["metrics"]
+        assert "metrics" not in pg_db.list_tables()
+
+        description = pg_db.describe_table(["reporting", "metrics"])
+        assert [column.name for column in description.columns] == ["id", "kind", "seen_at"]
+        assert description.columns[0].auto_increment is True
+        assert description.columns[2].type == TypeEnum.DATETIME
+        assert [c.name for c in description.constraints.unique] == ["metrics_kind_key"]
+
+        pg_db.create_index(["reporting", "metrics"], "idx_metrics_seen").columns("seen_at").if_not_exists().execute()
+        pg_db.create_index(["reporting", "metrics"], "idx_metrics_seen").columns("seen_at").if_not_exists().execute()
+
+        indexes = pg_db.prepared(
+            "SELECT indexname FROM pg_indexes WHERE schemaname = ? AND tablename = ?",
+            ["reporting", "metrics"],
+        ).scalars()
+        assert "idx_metrics_seen" in indexes
+
+        pg_db.drop_index(["reporting", "metrics"], "idx_metrics_seen").if_exists().execute()
+        pg_db.drop_index(["reporting", "metrics"], "idx_metrics_seen").if_exists().execute()
+
+        indexes = pg_db.prepared(
+            "SELECT indexname FROM pg_indexes WHERE schemaname = ? AND tablename = ?",
+            ["reporting", "metrics"],
+        ).scalars()
+        assert "idx_metrics_seen" not in indexes
+    finally:
+        pg_db.exec("DROP SCHEMA IF EXISTS reporting CASCADE")
+
+
+def test_postgres_describe_table_recovers_every_type_enum(pg_db: DB) -> None:
+    """A column declared through the builders describes back as it was declared.
+
+    TIMESTAMPTZ carries no precision, so that one width cannot survive.
+    """
+    pg_db.exec('DROP TABLE IF EXISTS "spread_types" CASCADE')
+    pg_db.create_table("spread_types") \
+        .identity("id") \
+        .boolean("flag") \
+        .integer("n32", 32).integer("n64", 64) \
+        .float("f32", 32).float("f64", 64) \
+        .string("s64", 64).string("s255").text("body") \
+        .datetime("seen_at").json("payload") \
+        .execute()
+    try:
+        columns = pg_db.describe_table("spread_types").columns
+
+        assert [(column.name, column.type, column.size) for column in columns] == [
+            ("id", TypeEnum.INT, 64),
+            ("flag", TypeEnum.BOOL, None),
+            ("n32", TypeEnum.INT, 32),
+            ("n64", TypeEnum.INT, 64),
+            ("f32", TypeEnum.FLOAT, 32),
+            ("f64", TypeEnum.FLOAT, 64),
+            ("s64", TypeEnum.STRING, 64),
+            ("s255", TypeEnum.STRING, 255),
+            ("body", TypeEnum.STRING, sys.maxsize),
+            ("seen_at", TypeEnum.DATETIME, None),
+            ("payload", TypeEnum.JSON, None),
+        ]
+    finally:
+        pg_db.exec('DROP TABLE IF EXISTS "spread_types" CASCADE')

@@ -103,28 +103,28 @@ class ColumnsDefinitionMixin:
         not_null: bool = False,
         default: Any = None,
         generated_by_default_as_identity: bool = False,
-        bits: int | None = None,
+        size: int | None = None,
     ) -> Self:
         self._columns.append(Column(
             name=name,
             type=type_,
-            bits=bits,
+            size=size,
             not_null=not_null,
             default=default,
             auto_increment=generated_by_default_as_identity,
         ))
         return self
 
-    def auto_increment(self, name: str, bits: int = 64, add_primary_key: bool = True) -> Self:
-        return self.identity(name, bits, add_primary_key)
+    def auto_increment(self, name: str, size: int = 64, add_primary_key: bool = True) -> Self:
+        return self.identity(name, size, add_primary_key)
 
-    def serial(self, name: str, bits: int = 64, add_primary_key: bool = True) -> Self:
-        return self.identity(name, bits, add_primary_key)
+    def serial(self, name: str, size: int = 64, add_primary_key: bool = True) -> Self:
+        return self.identity(name, size, add_primary_key)
 
-    def identity(self, name: str, bits: int = 64, add_primary_key: bool = True) -> Self:
+    def identity(self, name: str, size: int = 64, add_primary_key: bool = True) -> Self:
         if add_primary_key and name not in self._primary_keys:
             self._primary_keys.append(name)
-        return self.integer(name, bits, True, None, True)
+        return self.integer(name, size, True, None, True)
 
     def boolean(self, name: str, not_null: bool = False, default: bool | None = None) -> Self:
         return self.column(name, TypeEnum.BOOL, not_null, default)
@@ -132,21 +132,21 @@ class ColumnsDefinitionMixin:
     def integer(
         self,
         name: str,
-        bits: int = 64,
+        size: int = 64,
         not_null: bool = False,
         default: int | None = None,
         generated_by_default_as_identity: bool = False,
     ) -> Self:
-        return self.column(name, TypeEnum.INT, not_null, default, generated_by_default_as_identity, bits=bits)
+        return self.column(name, TypeEnum.INT, not_null, default, generated_by_default_as_identity, size=size)
 
     def float(
         self,
         name: str,
-        bits: int = 64,
+        size: int = 64,
         not_null: bool = False,
         default: float | None = None,
     ) -> Self:
-        return self.column(name, TypeEnum.FLOAT, not_null, default, bits=bits)
+        return self.column(name, TypeEnum.FLOAT, not_null, default, size=size)
 
     def string(
         self,
@@ -155,7 +155,7 @@ class ColumnsDefinitionMixin:
         not_null: bool = False,
         default: str | None = None,
     ) -> Self:
-        return self.column(name, TypeEnum.STRING, not_null, default, bits=size)
+        return self.column(name, TypeEnum.STRING, not_null, default, size=size)
 
     def text(self, name: str, not_null: bool = False, default: str | None = None) -> Self:
         return self.string(name, sys.maxsize, not_null, default)
@@ -167,7 +167,7 @@ class ColumnsDefinitionMixin:
         not_null: bool = False,
         default: Any = None,
     ) -> Self:
-        return self.column(name, TypeEnum.DATETIME, not_null, default, bits=size)
+        return self.column(name, TypeEnum.DATETIME, not_null, default, size=size)
 
     def current_timestamp(
         self,
@@ -191,12 +191,12 @@ class AltersMixin:
         not_null: bool = False,
         default: Any = None,
         generated_by_default_as_identity: bool = False,
-        bits: int | None = None,
+        size: int | None = None,
     ) -> Self:
         self._alters.append(AddColumn(
             name=name,
             type=type_,
-            bits=bits,
+            size=size,
             not_null=not_null,
             default=default,
             auto_increment=generated_by_default_as_identity,
@@ -253,13 +253,13 @@ class AltersMixin:
         self._alters.append(RawAlter(sql=sql))
         return self
 
-    def add_auto_increment(self, name: str, bits: int = 64, add_primary_key: bool = True) -> Self:
-        return self.add_identity(name, bits, add_primary_key)
+    def add_auto_increment(self, name: str, size: int = 64, add_primary_key: bool = True) -> Self:
+        return self.add_identity(name, size, add_primary_key)
 
-    def add_identity(self, name: str, bits: int = 64, add_primary_key: bool = True) -> Self:
+    def add_identity(self, name: str, size: int = 64, add_primary_key: bool = True) -> Self:
         if add_primary_key:
             self.add_primary_keys(name)
-        return self.add_int(name, bits, True, None, True)
+        return self.add_int(name, size, True, None, True)
 
     def add_bool(self, name: str, not_null: bool = False, default: bool | None = None) -> Self:
         return self.add_column(name, TypeEnum.BOOL, not_null, default)
@@ -267,21 +267,21 @@ class AltersMixin:
     def add_int(
         self,
         name: str,
-        bits: int = 64,
+        size: int = 64,
         not_null: bool = False,
         default: int | None = None,
         generated_by_default_as_identity: bool = False,
     ) -> Self:
-        return self.add_column(name, TypeEnum.INT, not_null, default, generated_by_default_as_identity, bits=bits)
+        return self.add_column(name, TypeEnum.INT, not_null, default, generated_by_default_as_identity, size=size)
 
     def add_float(
         self,
         name: str,
-        bits: int = 64,
+        size: int = 64,
         not_null: bool = False,
         default: float | None = None,
     ) -> Self:
-        return self.add_column(name, TypeEnum.FLOAT, not_null, default, bits=bits)
+        return self.add_column(name, TypeEnum.FLOAT, not_null, default, size=size)
 
     def add_string(
         self,
@@ -290,7 +290,7 @@ class AltersMixin:
         not_null: bool = False,
         default: str | None = None,
     ) -> Self:
-        return self.add_column(name, TypeEnum.STRING, not_null, default, bits=size)
+        return self.add_column(name, TypeEnum.STRING, not_null, default, size=size)
 
     def add_text(self, name: str, not_null: bool = False, default: str | None = None) -> Self:
         return self.add_string(name, sys.maxsize, not_null, default)
@@ -302,7 +302,7 @@ class AltersMixin:
         not_null: bool = False,
         default: Any = None,
     ) -> Self:
-        return self.add_column(name, TypeEnum.DATETIME, not_null, default, bits=size)
+        return self.add_column(name, TypeEnum.DATETIME, not_null, default, size=size)
 
     def add_current_timestamp(
         self,

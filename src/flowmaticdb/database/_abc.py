@@ -15,13 +15,16 @@ if TYPE_CHECKING:
     from flowmaticdb.dialects import DialectABC
     from flowmaticdb.query import (
         AlterTableQuery,
+        CreateIndexQuery,
         CreateTableQuery,
         DeleteQuery,
+        DropIndexQuery,
         DropTableQuery,
         InsertQuery,
         SelectQuery,
         UpdateQuery,
     )
+    from flowmaticdb.query.ddl import TableDescription
     from flowmaticdb.query.expressions import Alias, SubQuery
 
 
@@ -169,6 +172,22 @@ class DatabaseABC:
     def drop_table(self, table: str | list[str]) -> DropTableQuery:
         from flowmaticdb.query import DropTableQuery
         return DropTableQuery(self._dialect, table, database=self)
+
+    def create_index(self, table: str | list[str], name: str) -> CreateIndexQuery:
+        from flowmaticdb.query import CreateIndexQuery
+        return CreateIndexQuery(self._dialect, table, database=self, name=name)
+
+    def drop_index(self, table: str | list[str], name: str) -> DropIndexQuery:
+        from flowmaticdb.query import DropIndexQuery
+        return DropIndexQuery(self._dialect, table, database=self, name=name)
+
+    def list_tables(self, schema: str = "public") -> list[str]:
+        result = self.query_with_params(self._dialect.list_tables(schema))
+        return [str(row["table_name"]) for row in result.fetch_dicts()]
+
+    def describe_table(self, table: str | list[str]) -> TableDescription:
+        from flowmaticdb.database._introspection import describe_table
+        return describe_table(self, self._dialect, table)
 
     def table(self, table: str | list[str]) -> Table:
         from flowmaticdb.database._table import Table

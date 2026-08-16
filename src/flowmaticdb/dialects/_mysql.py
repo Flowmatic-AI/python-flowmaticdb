@@ -52,11 +52,17 @@ class MySQLDialect(SQLDialect):
         self._is_mariadb = is_mariadb
         self._version_gate()
 
+    default_schema_sql: ClassVar[str] = "DATABASE()"
+
     def _version_gate(self) -> None:
         self.lateral = (not self._is_mariadb) and self._version >= 80014
         self.on_conflict = True if self._is_mariadb else self._version >= 40100
         self.returning = self._is_mariadb and self._version >= 100500
         self.json = self._version >= 100207 if self._is_mariadb else self._version >= 50708
+        # MySQL proper has never accepted IF (NOT) EXISTS on an index; MariaDB
+        # grew both spellings in 10.1.4.
+        self.index_if_not_exists = self._is_mariadb and self._version >= 100104
+        self.index_if_exists = self._is_mariadb and self._version >= 100104
 
     def begin_transaction(self, name: str | None = None) -> QueryWithParams:
         return QueryWithParams(query="START TRANSACTION")
@@ -83,6 +89,85 @@ class MySQLDialect(SQLDialect):
                 merged_primary_keys.append(col.name)
 
         return super().create_table(if_not_exists, table, columns, merged_primary_keys, constraints)
+
+    def drop_index(self, if_exists: bool, name: str | list[str], table: Any) -> QueryWithParams:
+        # MySQL scopes an index name to its table rather than to the schema.
+        qwp = super().drop_index(if_exists, name, table)
+        return QueryWithParams(query=f"{qwp.query} ON {self._table_name(table)}")
+
+    def _index_name(self, name: str | list[str], table: Any) -> str | list[str]:
+        # The table carries the schema on MySQL, so the index name stays bare.
+        return name
+
+    def list_tables(self, schema: str) -> QueryWithParams:
+        # MySQL has no schema below the database, so the requested one is
+        # ignored and the connected database answers instead.
+        query = (
+            "SELECT t.TABLE_NAME AS table_name"
+            " FROM information_schema.TABLES t"
+            " WHERE t.TABLE_TYPE = 'BASE TABLE' AND t.TABLE_SCHEMA = DATABASE()"
+            " ORDER BY t.TABLE_NAME"
+        )
+
+        return QueryWithParams(query=query)
+
+    def describe_table_columns(self, table: Any) -> QueryWithParams:
+        schema, name = self._schema_and_table(table)
+        params: list[Any] = [name]
+        schema_filter = self._schema_filter("c.TABLE_SCHEMA", schema, params)
+
+        query = (
+            "SELECT"
+            " c.COLUMN_NAME AS column_name,"
+            # COLUMN_TYPE keeps the declared width; DATA_TYPE drops it.
+            " c.COLUMN_TYPE AS column_type,"
+            " CASE WHEN c.IS_NULLABLE = 'NO' THEN 1 ELSE 0 END AS not_null,"
+            " c.COLUMN_DEFAULT AS default_expression,"
+            " CASE WHEN LOCATE('auto_increment', c.EXTRA) > 0 THEN 1 ELSE 0 END AS auto_increment"
+            " FROM information_schema.COLUMNS c"
+            f" WHERE c.TABLE_NAME = ?{schema_filter}"
+            " ORDER BY c.ORDINAL_POSITION"
+        )
+
+        return QueryWithParams(query=query, params=params)
+
+    def describe_table_constraints(self, table: Any) -> QueryWithParams:
+        schema, name = self._schema_and_table(table)
+        params: list[Any] = [name]
+        schema_filter = self._schema_filter("tc.table_schema", schema, params)
+
+        # The base reaches the referenced column by joining key_column_usage
+        # back onto referential_constraints.unique_constraint_name, which
+        # assumes a constraint name identifies one constraint per schema. MySQL
+        # names every primary key 'PRIMARY', so that join multiplies a foreign
+        # key by the number of tables in the schema. key_column_usage carries
+        # the referenced table and column outright here, so use those instead.
+        query = (
+            "SELECT"
+            " tc.constraint_name AS constraint_id,"
+            " tc.constraint_name AS constraint_name,"
+            " tc.constraint_type AS constraint_type,"
+            " kcu.column_name AS column_name,"
+            " kcu.ordinal_position AS column_position,"
+            " kcu.referenced_table_name AS ref_table,"
+            " kcu.referenced_column_name AS ref_column,"
+            " rc.delete_rule AS on_delete,"
+            " rc.update_rule AS on_update"
+            " FROM information_schema.table_constraints tc"
+            " JOIN information_schema.key_column_usage kcu"
+            " ON kcu.constraint_schema = tc.constraint_schema"
+            " AND kcu.constraint_name = tc.constraint_name"
+            " AND kcu.table_name = tc.table_name"
+            " LEFT JOIN information_schema.referential_constraints rc"
+            " ON rc.constraint_schema = tc.constraint_schema"
+            " AND rc.constraint_name = tc.constraint_name"
+            " AND rc.table_name = tc.table_name"
+            f" WHERE tc.table_name = ?{schema_filter}"
+            " AND tc.constraint_type IN ('UNIQUE', 'FOREIGN KEY')"
+            " ORDER BY tc.constraint_name, kcu.ordinal_position"
+        )
+
+        return QueryWithParams(query=query, params=params)
 
     def _build_on_conflict(
         self,
@@ -194,22 +279,49 @@ class MySQLDialect(SQLDialect):
     def _build_alter_table_drop_constraint(self, alter: DropConstraint) -> str:
         return f"DROP INDEX {self.escape_identifier(alter.name)}"
 
-    def type(self, type_enum: TypeEnum, bits: int | None = None) -> str:
-        size = bits or 0
+    def _parse_type_name(self, name: str, size: int | None) -> tuple[TypeEnum, int | None] | None:
+        # COLUMN_TYPE carries the attributes along: "bigint unsigned".
+        name = name.removesuffix(" zerofill").removesuffix(" unsigned")
+
+        # TINYINT is what this dialect renders a boolean as. MySQL offers no
+        # boolean of its own, so a genuine one-byte integer is indistinguishable.
+        if name == "tinyint":
+            return TypeEnum.BOOL, None
+        if name == "double":
+            return TypeEnum.FLOAT, 64
+        if name == "float":
+            return TypeEnum.FLOAT, 32
+        # Unlike PostgreSQL and SQLite, MySQL's text types are each bounded, so
+        # the width that renders them again is the bound itself. Even the widest
+        # of them stops short of sys.maxsize, which is reserved for the dialects
+        # whose TEXT really is unbounded.
+        if name == "text":
+            return TypeEnum.STRING, 65535
+        if name == "mediumtext":
+            return TypeEnum.STRING, 16777215
+        if name == "longtext":
+            return TypeEnum.STRING, 4294967295
+        if name == "timestamp":
+            return TypeEnum.DATETIME, size
+
+        return super()._parse_type_name(name, size)
+
+    def type(self, type_enum: TypeEnum, size: int | None = None) -> str:
+        width = size or 0
         if type_enum == TypeEnum.BOOL:
             return "TINYINT"
         if type_enum == TypeEnum.FLOAT:
-            return "DOUBLE" if size > 32 else "FLOAT"
+            return "DOUBLE" if width > 32 else "FLOAT"
         if type_enum == TypeEnum.STRING:
-            if size > 16777215:
+            if width > 16777215:
                 return "LONGTEXT"
-            if size > 65535:
+            if width > 65535:
                 return "MEDIUMTEXT"
-            if size > 255:
+            if width > 255:
                 return "TEXT"
-            return f"VARCHAR({bits or 255})"
+            return f"VARCHAR({size or 255})"
         if type_enum == TypeEnum.DATETIME:
-            if size <= 0:
+            if width <= 0:
                 return "DATETIME"
-            return f"DATETIME({min(size, 6)})"
-        return super().type(type_enum, bits)
+            return f"DATETIME({min(width, 6)})"
+        return super().type(type_enum, size)
