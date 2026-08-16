@@ -47,19 +47,6 @@ class PrimaryKeysMixin:
         self._primary_keys = columns
         return self
 
-def _parse_referential_actions(referential_actions: list[Any] | None) -> tuple[str | None, str | None]:
-    on_delete: str | None = None
-    on_update: str | None = None
-    if referential_actions:
-        for action in referential_actions:
-            parts = str(action).split(' ', 2)
-            if len(parts) == 3 and parts[0] == 'ON':
-                if parts[1] == 'DELETE':
-                    on_delete = parts[2]
-                elif parts[1] == 'UPDATE':
-                    on_update = parts[2]
-    return on_delete, on_update
-
 class ConstraintsMixin:
     _constraints: list[ConstraintABC]
 
@@ -73,10 +60,9 @@ class ConstraintsMixin:
         ref_table: str,
         ref_column: str,
         name: str | None = None,
-        referential_actions: list[ReferentialActionEnum|str] | None = None,
+        on_delete: ReferentialActionEnum | None = None,
+        on_update: ReferentialActionEnum | None = None,
     ) -> Self:
-        on_delete, on_update = _parse_referential_actions(referential_actions)
-
         self._constraints.append(ForeignKeyConstraint(
             columns=[column],
             ref_table=ref_table,
@@ -231,10 +217,9 @@ class AltersMixin:
         ref_table: str,
         ref_column: str,
         name: str | None = None,
-        referential_actions: list[Any] | None = None,
+        on_delete: ReferentialActionEnum | None = None,
+        on_update: ReferentialActionEnum | None = None,
     ) -> Self:
-        on_delete, on_update = _parse_referential_actions(referential_actions)
-
         self._alters.append(AddForeignKeyConstraint(
             columns=[column],
             ref_table=ref_table,

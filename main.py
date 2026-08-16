@@ -6,6 +6,7 @@ from pprint import pprint
 
 from flowmaticdb.database import DB
 from flowmaticdb.query.enums import ReferentialActionEnum
+from flowmaticdb import raw
 
 
 def debug_callback(query: str, starttime: float, error: str | None):
@@ -22,9 +23,9 @@ db = DB.connect_sqlite(":memory:", debug_callback=debug_callback, max_concurrent
 # db = DB.connect_postgresql("postgres", host="localhost", user="postgres", debug_callback=debug_callback, asyncpg_adapter=False)
 # db = DB.connect_mysql("flowmaticdb", host="localhost", user="root", password="", debug_callback=debug_callback)
 
-db.create_table("users").if_not_exists().identity("id").string("name", not_null=True).integer("age").current_timestamp("updated_at").datetime('created_at').text("always filled in text", True, "no way").column("test_columm", "VECTOR").unique_constraint(["id"], "test_unique").execute()
+db.create_table("users").if_not_exists().identity("id").string("name", not_null=True).integer("age").current_timestamp("updated_at").datetime('created_at').text("always filled in text", True, "no way").column("test_columm", "VECTOR", default=raw('CURRENT_TIMESTAMP')).unique_constraint(["id"], "test_unique").boolean("always_false", default=False).execute()
 
-db.create_table("posts").if_not_exists().identity("id").string("title", not_null=True).text("body").integer("user_id").foreign_key_constraint("user_id", "users", "id", referential_actions=[ReferentialActionEnum.ON_DELETE_CASCADE]).execute()
+db.create_table("posts").if_not_exists().identity("id").string("title", not_null=True).text("body").integer("user_id").foreign_key_constraint("user_id", "users", "id", on_delete=ReferentialActionEnum.CASCADE).execute()
 
 db.alter_table("users").add_string("email", size=255).execute()
 

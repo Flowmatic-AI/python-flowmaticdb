@@ -181,7 +181,7 @@ class InitialSchema(MigrationABC):
                 "user_id",
                 "users",
                 "id",
-                referential_actions=[ReferentialActionEnum.ON_DELETE_CASCADE],
+                on_delete=ReferentialActionEnum.CASCADE,
             ) \
             .execute()
 
@@ -221,7 +221,9 @@ Note what changed and why:
 - The inline `UNIQUE` became a named constraint. SQLite strips constraint names
   rather than failing, so the name is portable.
 - `REFERENCES ... ON DELETE CASCADE` → `foreign_key_constraint(...)` with
-  `ReferentialActionEnum`, which is the enum, not a string.
+  `on_delete=ReferentialActionEnum.CASCADE`. The member names the action alone —
+  the parameter it goes to is what makes it a delete rule — and it is the enum,
+  not a string.
 - `TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP` → `.current_timestamp("created_at")`.
   A plain `.datetime("created_at")` is the column without the default.
 - `JSONB` → `.json(...)`, which picks `JSONB` / `JSON` / `TEXT` per server version.

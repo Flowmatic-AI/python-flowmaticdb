@@ -161,15 +161,13 @@ def test_alter_table_alter_column_does_not_crash(sql_dialect: SQLDialect, mock_d
     result = q.to_query_with_params()
     assert '"age"' in result[0].query
 
-def test_add_foreign_key_constraint_parses_referential_action_enums(sql_dialect: SQLDialect, mock_db) -> None:
+def test_add_foreign_key_constraint_takes_referential_action_enums(sql_dialect: SQLDialect, mock_db) -> None:
     q = AlterTableQuery(sql_dialect, "posts", database=mock_db)
     q.add_foreign_key_constraint(
         "user_id", "users", "id",
         name="fk1",
-        referential_actions=[
-            ReferentialActionEnum.ON_DELETE_CASCADE,
-            ReferentialActionEnum.ON_UPDATE_SET_NULL,
-        ],
+        on_delete=ReferentialActionEnum.CASCADE,
+        on_update=ReferentialActionEnum.SET_NULL,
     )
 
     alter = q._alters[0]
@@ -184,10 +182,8 @@ def test_foreign_key_constraint_emits_referential_actions_in_create_table(sql_di
     q.foreign_key_constraint(
         "user_id", "users", "id",
         name="fk1",
-        referential_actions=[
-            ReferentialActionEnum.ON_DELETE_CASCADE,
-            ReferentialActionEnum.ON_UPDATE_SET_NULL,
-        ],
+        on_delete=ReferentialActionEnum.CASCADE,
+        on_update=ReferentialActionEnum.SET_NULL,
     )
     sql = q.to_query_with_params().query
 

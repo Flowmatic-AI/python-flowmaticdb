@@ -306,6 +306,12 @@ class MySQLDialect(SQLDialect):
 
         return super()._parse_type_name(name, size)
 
+    def _parse_default_literal(self, expression: str) -> tuple[str, bool]:
+        # Alone among the three, MySQL reports the default's value rather than
+        # the literal that spelled it: no way, not 'no way'. So there are no
+        # quotes to strip, and a string default is always a value.
+        return expression, True
+
     def type(self, type_enum: TypeEnum, size: int | None = None) -> str:
         width = size or 0
         if type_enum == TypeEnum.BOOL:

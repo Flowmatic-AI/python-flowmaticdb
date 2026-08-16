@@ -126,7 +126,7 @@ db.create_table("users").if_not_exists() \
     .current_timestamp("created_at") \
     .json("preferences") \
     .unique_constraint(["email"], name="uq_users_email") \
-    .foreign_key_constraint("role_id", "roles", "id", referential_actions=[ReferentialActionEnum.ON_DELETE_CASCADE]) \
+    .foreign_key_constraint("role_id", "roles", "id", on_delete=ReferentialActionEnum.CASCADE) \
     .execute()
 
 db.alter_table("users").add_string("nickname", size=64).add_int("score", not_null=True, default=0).execute()

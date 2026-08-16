@@ -5,6 +5,7 @@ import pytest
 from flowmaticdb import QueryError, QueryWithParams
 from flowmaticdb.dialects import SQLDialect, SQLiteDialect
 from flowmaticdb.query import AlterTableQuery
+from flowmaticdb.query.enums import ReferentialActionEnum
 
 
 def test_alter_table_add_column(sql_dialect: SQLDialect, mock_db) -> None:
@@ -292,7 +293,8 @@ def test_alter_table_add_foreign_key_with_actions(sql_dialect: SQLDialect, mock_
     q.add_foreign_key_constraint(
         "user_id", "users", "id",
         name="fk_posts_user",
-        referential_actions=["ON DELETE CASCADE", "ON UPDATE SET NULL"],
+        on_delete=ReferentialActionEnum.CASCADE,
+        on_update=ReferentialActionEnum.SET_NULL,
     )
     result = q.to_query_with_params()
 

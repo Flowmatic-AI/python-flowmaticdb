@@ -29,7 +29,7 @@ from flowmaticdb.query.ddl import (
     UniqueConstraint,
 )
 from flowmaticdb.query.enums import ChainEnum, ConditionEnum, TypeEnum
-from flowmaticdb.query.expressions import Alias, Excluded, PostgresArray, Raw, SqlABC
+from flowmaticdb.query.expressions import Alias, CurrentTimestamp, Excluded, PostgresArray, Raw, SqlABC
 
 _TRAILING_ZEROS = re.compile(r"(\.[0-9]+?)0+$")
 
@@ -38,6 +38,16 @@ _TRAILING_ZEROS = re.compile(r"(\.[0-9]+?)0+$")
 # precision, itself optionally followed by a scale -- VARCHAR(64), DATETIME(6),
 # DECIMAL(30, 15).
 _DECLARED_TYPE = re.compile(r"^\s*([A-Za-z][A-Za-z0-9 ]*?)\s*(?:\(\s*(\d+)\s*(?:,\s*\d+\s*)?\))?\s*$")
+
+# The spellings an engine reports for a CURRENT_TIMESTAMP default. MySQL carries
+# the fractional precision along -- CURRENT_TIMESTAMP(6) -- and NOW() is the same
+# function under another name.
+_CURRENT_TIMESTAMP_DEFAULT = re.compile(r"^(?:CURRENT_TIMESTAMP(?:\s*\(\s*\d+\s*\))?|NOW\s*\(\s*\))$", re.IGNORECASE)
+
+# What a boolean default looks like once the engines have had their say: t/f
+# from PostgreSQL, 1/0 from the two that store booleans as integers.
+_TRUE_DEFAULTS = ("true", "t", "1", "yes")
+_FALSE_DEFAULTS = ("false", "f", "0", "no")
 
 
 def _format_float_for_query(value: float) -> str:
@@ -1119,6 +1129,67 @@ class SQLDialect(DialectABC):
             return TypeEnum.JSON, None
 
         return None
+
+    def parse_default(self, default_expression: str, type_enum: TypeEnum | str) -> Any:
+        # The inverse of _build_column_default(): the engine hands back the
+        # DEFAULT clause as it stored it, and this reads it as the Python value
+        # the column was declared with. Anything this dialect cannot read as a
+        # literal of that type -- a function call, an arithmetic expression --
+        # is left alone and reaches the caller as the raw string, the same way
+        # an unknown declared type does.
+        expression = default_expression.strip()
+
+        if _CURRENT_TIMESTAMP_DEFAULT.match(expression):
+            return CurrentTimestamp()
+
+        if not isinstance(type_enum, TypeEnum):
+            return default_expression
+
+        value, is_literal = self._parse_default_literal(expression)
+
+        if type_enum == TypeEnum.STRING:
+            # On the engines that report a literal, an unquoted token is an
+            # expression rather than a value.
+            return value if is_literal else default_expression
+
+        if type_enum == TypeEnum.BOOL:
+            if value.lower() in _TRUE_DEFAULTS:
+                return True
+            if value.lower() in _FALSE_DEFAULTS:
+                return False
+            return default_expression
+
+        if type_enum == TypeEnum.INT:
+            try:
+                return int(value)
+            except ValueError:
+                return default_expression
+
+        if type_enum == TypeEnum.FLOAT:
+            try:
+                return float(value)
+            except ValueError:
+                return default_expression
+
+        if type_enum == TypeEnum.DATETIME:
+            parsed = self.parse_datetime(value)
+            return parsed if isinstance(parsed, datetime) else default_expression
+
+        if type_enum == TypeEnum.JSON:
+            # decode_json() hands back what it was given when it will not parse.
+            decoded = self.parse_json(value)
+            return default_expression if isinstance(decoded, str) else decoded
+
+        return default_expression
+
+    def _parse_default_literal(self, expression: str) -> tuple[str, bool]:
+        # A quoted SQL literal down to its value, with the doubling that escapes
+        # an embedded quote undone. The flag says whether it was quoted at all,
+        # which is what tells a string value apart from an expression.
+        if len(expression) >= 2 and expression.startswith("'") and expression.endswith("'"):
+            return expression[1:-1].replace("''", "'"), True
+
+        return expression, False
 
     def type(self, type_enum: TypeEnum, size: int | None = None) -> str:
         width = size or 0

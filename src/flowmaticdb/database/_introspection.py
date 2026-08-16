@@ -9,6 +9,7 @@ from flowmaticdb.query.ddl import (
     TableDescription,
     UniqueConstraint,
 )
+from flowmaticdb.query.enums import ReferentialActionEnum
 
 if TYPE_CHECKING:
     from flowmaticdb.database._abc import DatabaseABC
@@ -17,6 +18,21 @@ if TYPE_CHECKING:
 
 def _optional_string(value: Any) -> str | None:
     return None if value is None else str(value)
+
+
+def _referential_action(value: Any) -> ReferentialActionEnum | str | None:
+    # Every engine reports the action in the standard's own spelling, so the
+    # enum a foreign key was built with is the enum that comes back. A spelling
+    # outside the standard is left as the raw string rather than dropped.
+    if value is None:
+        return None
+
+    text = str(value).upper()
+    for action in ReferentialActionEnum:
+        if action.value == text:
+            return action
+
+    return str(value)
 
 
 def parse_columns(dialect: DialectABC, rows: list[dict[str, Any]]) -> list[Column]:
@@ -28,14 +44,19 @@ def parse_columns(dialect: DialectABC, rows: list[dict[str, Any]]) -> list[Colum
         # dialect maps it back onto the TypeEnum and width that produced it.
         column_type, size = dialect.parse_column_type(str(row["column_type"]), auto_increment)
 
+        # An auto-incrementing column's default is the sequence driving it,
+        # which is not a default the table ever declared.
+        default_expression = None if auto_increment else _optional_string(row["default_expression"])
+        # The engine reports the DEFAULT clause as stored text; the dialect
+        # reads it back as the Python value the column was declared with.
+        default = None if default_expression is None else dialect.parse_default(default_expression, column_type)
+
         columns.append(Column(
             name=str(row["column_name"]),
             type=column_type,
             size=size,
             not_null=dialect.parse_bool(row["not_null"]),
-            # An auto-incrementing column's default is the sequence driving it,
-            # which is not a default the table ever declared.
-            default=None if auto_increment else _optional_string(row["default_expression"]),
+            default=default,
             auto_increment=auto_increment,
         ))
 
@@ -78,8 +99,8 @@ def parse_constraints(rows: list[dict[str, Any]]) -> TableConstraints:
                 ref_table=str(row["ref_table"]),
                 ref_columns=[],
                 name=name,
-                on_delete=_optional_string(row["on_delete"]),
-                on_update=_optional_string(row["on_update"]),
+                on_delete=_referential_action(row["on_delete"]),
+                on_update=_referential_action(row["on_update"]),
             )
             foreign_keys_by_id[constraint_id] = foreign_key
             constraints.foreign_keys.append(foreign_key)

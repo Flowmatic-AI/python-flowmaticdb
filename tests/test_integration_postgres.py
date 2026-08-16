@@ -29,8 +29,8 @@ from flowmaticdb.database import DB
 from flowmaticdb.dialects import PostgresqlDialect
 from flowmaticdb.query import AlterTableQuery, Condition, CreateTableQuery, InsertQuery, OnConflict, SelectQuery
 from flowmaticdb.query.ddl import AddColumn, Column
-from flowmaticdb.query.enums import ConditionEnum, TypeEnum
-from flowmaticdb.query.expressions import Alias, Excluded
+from flowmaticdb.query.enums import ConditionEnum, ReferentialActionEnum, TypeEnum
+from flowmaticdb.query.expressions import Alias, CurrentTimestamp, Excluded
 from flowmaticdb.result import ResultABC
 
 PG_HOST: str = "localhost"
@@ -1274,7 +1274,8 @@ def _introspection_schema(db: DB) -> None:
             "intro_roles",
             "id",
             name="intro_users_role_fk",
-            referential_actions=["ON DELETE CASCADE", "ON UPDATE SET NULL"],
+            on_delete=ReferentialActionEnum.CASCADE,
+            on_update=ReferentialActionEnum.SET_NULL,
         ) \
         .execute()
 
@@ -1321,8 +1322,8 @@ def test_postgres_describe_table(pg_db: DB) -> None:
     assert foreign_key.columns == ["role_id"]
     assert foreign_key.ref_table == "intro_roles"
     assert foreign_key.ref_columns == ["id"]
-    assert foreign_key.on_delete == "CASCADE"
-    assert foreign_key.on_update == "SET NULL"
+    assert foreign_key.on_delete is ReferentialActionEnum.CASCADE
+    assert foreign_key.on_update is ReferentialActionEnum.SET_NULL
 
     assert pg_db.describe_table(["public", "intro_users"]).columns == description.columns
     assert pg_db.describe_table("no_such_table").columns == []
@@ -1433,3 +1434,43 @@ def test_postgres_describe_table_recovers_every_type_enum(pg_db: DB) -> None:
         ]
     finally:
         pg_db.exec('DROP TABLE IF EXISTS "spread_types" CASCADE')
+
+
+def test_postgres_describe_table_recovers_every_default(pg_db: DB) -> None:
+    """A default describes back as the Python value it was declared with.
+
+    PostgreSQL stores the literal with the type it resolved it to hung off the
+    end -- 'no way'::character varying -- which the dialect strips.
+    """
+    pg_db.exec('DROP TABLE IF EXISTS "spread_defaults" CASCADE')
+    pg_db.create_table("spread_defaults") \
+        .identity("id") \
+        .boolean("flag", default=False) \
+        .integer("n", default=42) \
+        .float("f", default=1.5) \
+        .string("s", 64, default="no way") \
+        .string("s_quote", 64, default="it's here") \
+        .string("s_empty", 64, default="") \
+        .text("body", default="long one") \
+        .datetime("seen_at", default=CurrentTimestamp()) \
+        .json("payload", default='{"a": 1}') \
+        .integer("plain") \
+        .execute()
+    try:
+        columns = pg_db.describe_table("spread_defaults").columns
+        defaults = {column.name: column.default for column in columns}
+
+        assert defaults["flag"] is False
+        assert defaults["n"] == 42
+        assert defaults["f"] == 1.5
+        assert defaults["s"] == "no way"
+        assert defaults["s_quote"] == "it's here"
+        assert defaults["s_empty"] == ""
+        assert defaults["body"] == "long one"
+        assert defaults["payload"] == {"a": 1}
+        assert isinstance(defaults["seen_at"], CurrentTimestamp)
+        # The sequence behind an identity column is not a declared default.
+        assert defaults["id"] is None
+        assert defaults["plain"] is None
+    finally:
+        pg_db.exec('DROP TABLE IF EXISTS "spread_defaults" CASCADE')

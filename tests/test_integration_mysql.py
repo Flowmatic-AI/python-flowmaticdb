@@ -40,7 +40,8 @@ from flowmaticdb.query.ddl import (
     RenameColumn,
     UniqueConstraint,
 )
-from flowmaticdb.query.enums import TypeEnum
+from flowmaticdb.query.enums import ReferentialActionEnum, TypeEnum
+from flowmaticdb.query.expressions import CurrentTimestamp
 from flowmaticdb.result import ResultABC
 
 MYSQL_HOST: str = "localhost"
@@ -1232,7 +1233,8 @@ def _introspection_schema(db: DB) -> None:
             "intro_roles",
             "id",
             name="intro_users_role_fk",
-            referential_actions=["ON DELETE CASCADE", "ON UPDATE SET NULL"],
+            on_delete=ReferentialActionEnum.CASCADE,
+            on_update=ReferentialActionEnum.SET_NULL,
         ) \
         .execute()
 
@@ -1267,8 +1269,8 @@ def test_mysql_describe_table(
     assert foreign_key.columns == ["role_id"]
     assert foreign_key.ref_table == "intro_roles"
     assert foreign_key.ref_columns == ["id"]
-    assert foreign_key.on_delete == "CASCADE"
-    assert foreign_key.on_update == "SET NULL"
+    assert foreign_key.on_delete is ReferentialActionEnum.CASCADE
+    assert foreign_key.on_update is ReferentialActionEnum.SET_NULL
 
     assert db.describe_table([MYSQL_DATABASE, "intro_users"]).columns == description.columns
     assert db.describe_table("no_such_table").columns == []
@@ -1385,3 +1387,39 @@ def test_mysql_describe_table_recovers_every_type_enum(
         ("seen_at", TypeEnum.DATETIME, 6),
         ("payload", TypeEnum.JSON, None),
     ]
+
+
+def test_mysql_describe_table_recovers_every_default(
+    mysql_adapter: MySQLAdapter, mysql_dialect: MySQLDialect
+) -> None:
+    """A default describes back as the Python value it was declared with.
+
+    MySQL alone reports the value rather than the literal that spelled it, so
+    there are no quotes for the dialect to strip. TEXT and JSON columns are
+    absent because MySQL refuses a DEFAULT on either.
+    """
+    db = DB(mysql_adapter, mysql_dialect)
+    db.exec("DROP TABLE IF EXISTS `spread_defaults`")
+    db.create_table("spread_defaults") \
+        .identity("id") \
+        .boolean("flag", default=False) \
+        .integer("n", default=42) \
+        .float("f", default=1.5) \
+        .string("s", 64, default="no way") \
+        .string("s_quote", 64, default="it's here") \
+        .string("s_empty", 64, default="") \
+        .datetime("seen_at", default=CurrentTimestamp()) \
+        .integer("plain") \
+        .execute()
+
+    defaults = {column.name: column.default for column in db.describe_table("spread_defaults").columns}
+
+    assert defaults["flag"] is False
+    assert defaults["n"] == 42
+    assert defaults["f"] == 1.5
+    assert defaults["s"] == "no way"
+    assert defaults["s_quote"] == "it's here"
+    assert defaults["s_empty"] == ""
+    assert isinstance(defaults["seen_at"], CurrentTimestamp)
+    assert defaults["id"] is None
+    assert defaults["plain"] is None

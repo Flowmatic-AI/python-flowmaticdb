@@ -532,7 +532,7 @@ db.create_table("orders").if_not_exists() \
     .unique_constraint(["status", "user_id"], name="uq_orders_status_user") \
     .foreign_key_constraint(
         "user_id", "users", "id",
-        referential_actions=["ON DELETE CASCADE"],
+        on_delete=ReferentialActionEnum.CASCADE,
     ) \
     .execute()
 ```
@@ -1018,6 +1018,20 @@ for every type a dialect can render. A type it cannot render — `geometry`,
 `enum('a','b')` — is left alone and reaches you as the raw string, which
 `Column.type` allows (`TypeEnum | str`).
 
+Referential actions read back the same way, as the `ReferentialActionEnum` the
+key was built with rather than the string the engine reported:
+
+```python
+foreign_key.on_delete   # ReferentialActionEnum.CASCADE
+foreign_key.on_update   # ReferentialActionEnum.NO_ACTION
+```
+
+A key that declares no rule for an event reports `NO_ACTION` on the engines
+that default it explicitly, and `None` where the engine reports nothing at all.
+An action the enum does not list — `SET DEFAULT`, or anything a table created
+outside this library declares — is left as a raw string, the same way an unknown
+type is, so describing never loses what the engine reported.
+
 Three widths cannot survive the trip, because the engine never stored them:
 
 | | Declared | Described |
@@ -1028,18 +1042,41 @@ Three widths cannot survive the trip, because the engine never stored them:
 
 Everything else is exact on all three engines, identity columns included.
 
+Defaults come back the same way — as the Python value the column was declared
+with, not the text the engine stored:
+
+```python
+db.create_table("users") \
+    .boolean("active", default=False) \
+    .integer("score", default=42) \
+    .string("name", 64, default="anon") \
+    .json("prefs", default='{"a": 1}') \
+    .datetime("seen_at", default=CurrentTimestamp()) \
+    .execute()
+
+description.columns[0].default   # False           not "'0'" / "false" / "0"
+description.columns[1].default   # 42
+description.columns[2].default   # "anon"          not "'anon'::character varying"
+description.columns[3].default   # {"a": 1}
+description.columns[4].default   # CurrentTimestamp()
+```
+
+The mapping is `DialectABC.parse_default()`, the inverse of the DEFAULT clause
+each dialect renders, and it hides three engine differences: PostgreSQL hangs
+the resolved type off the literal (`'anon'::character varying`), SQLite reports
+the literal as written (`'anon'`), MySQL reports the bare value (`anon`). A
+`CURRENT_TIMESTAMP` default comes back as the `CurrentTimestamp` expression the
+builder took, MySQL's `CURRENT_TIMESTAMP(6)` included.
+
+A default that is not a literal of its type — `DEFAULT (1 + 1)`, `DEFAULT
+upper('x')` — is left as the raw string, the same way an unknown type is. So is
+any default on a column whose type did not resolve to a `TypeEnum`.
+
 The rest of a described column is still a **report, not a recipe**:
 
-- `default` is the raw catalog text, which is engine-shaped: PostgreSQL gives
-  an expression (`"'anon'::character varying"`), SQLite the literal as written
-  in the DDL (`"'anon'"`), MySQL the bare value (`'anon'`). Feeding it straight
-  back into `column(default=...)` is not a round-trip.
 - `auto_increment` is `True` for an identity, a `serial` and SQLite's
   `INTEGER PRIMARY KEY AUTOINCREMENT`; `default` is then `None`, since the
   sequence driving the column is not a default the table declared.
-- Referential actions come back spelled out (`'CASCADE'`, `'SET NULL'`,
-  `'NO ACTION'`) — every engine reports `'NO ACTION'` where the DDL said
-  nothing, so a described foreign key is never `None` there.
 - SQLite reports no name for a foreign key (`name is None`) and an
   auto-generated one for a unique constraint (`sqlite_autoindex_users_1`),
   because the engine keeps neither.
@@ -1548,8 +1585,10 @@ from flowmaticdb.query.enums import TypeEnum
 # BOOL, INT, FLOAT, STRING, DATETIME, JSON
 
 from flowmaticdb.query.enums import ReferentialActionEnum
-# ON_UPDATE_NO_ACTION, ON_UPDATE_SET_NULL, ON_UPDATE_CASCADE,
-# ON_DELETE_NO_ACTION, ON_DELETE_SET_NULL, ON_DELETE_CASCADE
+# NO_ACTION, RESTRICT, CASCADE, SET_NULL
+# Passed as on_delete= / on_update=, which is what picks the event.
+# The standard's SET DEFAULT is absent: MySQL records it but InnoDB never
+# carries it out, so it is not portable across the three engines.
 ```
 
 ---

@@ -36,10 +36,8 @@ def db() -> Iterator[DB]:
             "role_id",
             "roles",
             "id",
-            referential_actions=[
-                ReferentialActionEnum.ON_DELETE_CASCADE,
-                ReferentialActionEnum.ON_UPDATE_SET_NULL,
-            ],
+            on_delete=ReferentialActionEnum.CASCADE,
+            on_update=ReferentialActionEnum.SET_NULL,
         ) \
         .execute()
 
@@ -63,7 +61,8 @@ def test_describe_table_columns(db: DB) -> None:
     assert columns[1].type == TypeEnum.STRING
     assert columns[1].size == 64
     assert columns[1].not_null is True
-    assert columns[1].default == "'anon'"
+    # The value the column was declared with, not the literal that spelled it.
+    assert columns[1].default == "anon"
     assert columns[2].not_null is False
 
 
@@ -121,8 +120,11 @@ def test_describe_table_foreign_keys(db: DB) -> None:
     assert foreign_keys[0].columns == ["role_id"]
     assert foreign_keys[0].ref_table == "roles"
     assert foreign_keys[0].ref_columns == ["id"]
-    assert foreign_keys[0].on_delete == "CASCADE"
-    assert foreign_keys[0].on_update == "SET NULL"
+    # The enum the key was built with is the enum that comes back, not the
+    # string the engine reported. `is` rather than `==`: a StrEnum compares
+    # equal to its own value, so `==` would pass on a raw string too.
+    assert foreign_keys[0].on_delete is ReferentialActionEnum.CASCADE
+    assert foreign_keys[0].on_update is ReferentialActionEnum.SET_NULL
 
 
 def test_describe_table_ignores_standalone_indexes(db: DB) -> None:
@@ -359,6 +361,34 @@ def test_parse_constraints_groups_columns_by_id() -> None:
     assert constraints.foreign_keys[0].name is None
     assert constraints.foreign_keys[0].columns == ["role_id"]
     assert constraints.foreign_keys[0].ref_columns == ["id"]
+    assert constraints.foreign_keys[0].on_delete is ReferentialActionEnum.CASCADE
+    assert constraints.foreign_keys[0].on_update is ReferentialActionEnum.NO_ACTION
+
+
+def test_parse_constraints_keeps_an_unlisted_referential_action_as_a_string() -> None:
+    """An action the enum does not list is reported raw rather than dropped.
+
+    SET DEFAULT is the realistic case: this library will not build one because
+    InnoDB does not carry it out, but a table created elsewhere may declare it
+    and describing that table must not lose the rule.
+    """
+    constraints = parse_constraints([
+        {
+            "constraint_id": "1",
+            "constraint_name": "users_role_fk",
+            "constraint_type": "FOREIGN KEY",
+            "column_name": "role_id",
+            "column_position": 1,
+            "ref_table": "roles",
+            "ref_column": "id",
+            "on_delete": "SET DEFAULT",
+            "on_update": None,
+        },
+    ])
+
+    assert constraints.foreign_keys[0].on_delete == "SET DEFAULT"
+    assert not isinstance(constraints.foreign_keys[0].on_delete, ReferentialActionEnum)
+    assert constraints.foreign_keys[0].on_update is None
 
 
 def test_parse_constraints_ignores_other_constraint_types() -> None:
