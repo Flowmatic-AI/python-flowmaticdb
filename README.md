@@ -1215,6 +1215,139 @@ handler, and not from every worker at once.
 
 ---
 
+## MCP Server
+
+`flowmaticdb.mcp` exposes a connected database over the [Model Context
+Protocol](https://modelcontextprotocol.io), so an MCP client can read and write
+it through the same query builders. It needs the `mcp` extra:
+
+```bash
+pip install "flowmaticdb[mcp]"
+```
+
+Point it at a database and run it — the class builds the server, registers every
+tool and hands the transport off to `FastMCP`:
+
+```python
+from flowmaticdb.database import DB
+from flowmaticdb.mcp import FlowmaticDBMCP
+
+db = DB.connect_postgresql("mydb", host="localhost", user="postgres")
+
+FlowmaticDBMCP(db, "mydb").run()                     # stdio, the default
+FlowmaticDBMCP(db, "mydb").run("streamable-http")    # or over HTTP
+```
+
+`server` is the underlying `FastMCP` instance, for adding tools of your own or
+mounting it inside an existing ASGI application. `db` is the database it was
+built on.
+
+### Tools
+
+| Tool | Arguments | Returns |
+|------|-----------|---------|
+| `driver` | — | `"sqlite"`, `"postgresql"` or `"mysql"` |
+| `execute_sql` | `sql`, `params` | every row the statement produced |
+| `list_tables` | `schema` | table names |
+| `describe_table` | `table` | columns, unique constraints, foreign keys |
+| `select` | `table`, `wheres`, `group_by`, `havings`, `limit`, `offset` | matched rows |
+| `insert` | `table`, `values`, `returning`, `last_insert_id` | the returned rows |
+| `update` | `table`, `values`, `wheres` | confirmation |
+| `delete` | `table`, `wheres` | confirmation |
+| `begin_transaction` | — | transaction state |
+| `commit_transaction` | — | transaction state |
+| `rollback_transaction` | — | transaction state |
+| `begin_savepoint` | `name` | transaction state |
+| `commit_savepoint` | `name` | transaction state |
+| `rollback_savepoint` | `name` | transaction state |
+
+A `table` is a name, or a `["schema", "table"]` pair for a qualified one. Rows come
+back as objects keyed by column name, with datetimes as ISO 8601 strings, decimals
+as strings, JSON documents decoded, and binary columns either as their text or —
+when they do not hold text — base64 encoded.
+
+### Conditions
+
+`select`, `update` and `delete` filter through an array of wheres, joined with
+`AND`. Each one is `{"identifier": ..., "operator": ..., "value": ...}`, where the
+identifier is a column name or a `["table", "column"]` pair:
+
+```json
+{
+  "table": "users",
+  "wheres": [
+    {"identifier": "age", "operator": ">=", "value": 30},
+    {"identifier": "name", "operator": "starts with", "value": "A"}
+  ],
+  "limit": 20
+}
+```
+
+Operators are `=`, `!=`, `<`, `<=`, `>`, `>=`, `like`, `not like`, `ilike`,
+`not ilike`, `in`, `not in`, `between`, `not between`, `is null`, `is not null`,
+`contains`, `not contains`, `starts with`, `ends with`, `glob`, `not glob`,
+`regex`, `not regex`, `empty` and `not empty`. `in` and `not in` take a list
+value, `between` and `not between` a two-element `[min, max]` list, and the null
+and empty checks ignore the value. Every operator maps onto its `where_*` builder
+method, so identifiers are escaped and values travel as bound parameters — an
+unknown operator is refused rather than passed through to the SQL.
+
+`update` and `delete` require at least one where. An unfiltered write is still
+reachable, through `execute_sql`, but it has to be asked for by name.
+
+### Grouping
+
+`select` also takes `group_by`, a list of columns to collapse the rows on, and
+`havings` — the same array-of-conditions shape as `wheres`, with the same
+operators, applied to what the grouping produced rather than to the rows going
+into it:
+
+```json
+{
+  "table": "orders",
+  "group_by": ["customer"],
+  "havings": [{"identifier": "total", "operator": ">", "value": 100}]
+}
+```
+
+A `group_by` entry may be a `["table", "column"]` pair, like a where identifier.
+
+Two engine limits apply, and neither is the server's to soften. `select` reads
+whole rows, so a grouped one is `SELECT * … GROUP BY` — SQLite and MySQL with
+`ONLY_FULL_GROUP_BY` off return one arbitrary row per group, while PostgreSQL and
+a stock MySQL reject the ungrouped columns. And `havings` without a `group_by` is
+refused by SQLite as a non-aggregate query. Reach for `execute_sql` when the
+grouping needs aggregate columns to be meaningful.
+
+### Transactions
+
+The transaction tools drive one connection, so they only behave on a transport
+that keeps the server in a single process — `stdio`, or `streamable-http` without
+`stateless_http`.
+
+`begin_transaction` does not nest: while a transaction is open it refuses, and
+`begin_savepoint` is what carves out a part of it that can be rolled back on its
+own. Savepoints close innermost first, and committing or rolling back the
+transaction releases whatever is still open inside it.
+
+```
+begin_transaction  →  begin_savepoint "a"  →  rollback_savepoint "a"  →  commit_transaction
+                                  ↑ everything since "a" is discarded, the transaction lives on
+```
+
+### Insert and RETURNING
+
+`returning` names the columns to read back off the inserted rows; `[]` reads all
+of them, and leaving it out returns nothing. PostgreSQL, SQLite ≥ 3.35 and
+MariaDB ≥ 10.5 answer natively. Everywhere else the rows are read back by primary
+key instead, which needs `last_insert_id` set to the name of that key column:
+
+```json
+{"table": "users", "values": [{"name": "Alice"}], "returning": ["id", "name"], "last_insert_id": "id"}
+```
+
+---
+
 ## Expressions
 
 Import module-level factory functions:
@@ -1604,11 +1737,13 @@ A leading underscore on a module name marks it as a private implementation detai
 - `snapshot_result()` — Import from `flowmaticdb.result`
 
 - `MigrationABC`, `Migrator` — Import from `flowmaticdb.migrations`
+- `FlowmaticDBMCP`, `Where` — Import from `flowmaticdb.mcp`. This is the one module that imports an optional dependency at module scope, so importing it without the `mcp` extra installed raises `ModuleNotFoundError` — nothing else in the package touches it
 
 ```python
 from flowmaticdb.adapters import PsycopgAdapter, AsyncpgAdapter, MySQLAdapter
 from flowmaticdb.result import PsycopgResult, MySQLResult, snapshot_result
 from flowmaticdb.migrations import MigrationABC, Migrator
+from flowmaticdb.mcp import FlowmaticDBMCP, Where
 from flowmaticdb import raw, identifier, alias, expression, sub_query, current_timestamp, now
 ```
 
@@ -1735,6 +1870,7 @@ Connects to MySQL by default. Edit `main.py` to switch to SQLite or PostgreSQL.
 - `asyncpg>=0.29` (PostgreSQL, the default adapter — optional)
 - `psycopg[binary]>=3.1` (PostgreSQL, with `asyncpg_adapter=False` — optional)
 - `mysql-connector-python>=9.0` (MySQL and MariaDB adapter — optional)
+- `mcp>=1.12` (the bundled MCP server — optional)
 - SQLite uses the standard library (`sqlite3`)
 
 ---

@@ -13,7 +13,7 @@ pip install -r requirements.txt
 
 | Command | Purpose |
 |---------|---------|
-| `python3 -m pytest` | Run all tests (unit + SQLite integration; 524 passing without a server, 577 with MySQL and PostgreSQL up). Three long-standing failures: `test_sqlite_foreign_keys_pragma_left_alone_by_default`, `test_pg_identity_column_modern_version` and — only once PostgreSQL is reachable — `test_postgres_joins` |
+| `python3 -m pytest` | Run all tests (unit + SQLite integration; 611 passing and 56 skipped without a server, the skips being the MySQL and PostgreSQL suites). Three long-standing failures: `test_sqlite_foreign_keys_pragma_left_alone_by_default`, `test_pg_identity_column_modern_version` and — only once PostgreSQL is reachable — `test_postgres_joins` |
 | `python3 -m pytest tests/test_integration_sqlite.py` | SQLite integration tests |
 | `python3 -m pytest tests/test_integration_postgres.py` | PostgreSQL integration tests (skips when PG not reachable on localhost:5432; run `docker compose up -d postgres`) |
 | `python3 -m pytest tests/test_integration_mysql.py` | MySQL integration tests (skips when MySQL not reachable on localhost:3306; run `docker start sentience-v3-mysql-1` or any `mysql` container with `MYSQL_ALLOW_EMPTY_PASSWORD=yes` on port 3306 — the suite auto-creates the `flowmaticdb` database) |
@@ -26,13 +26,19 @@ No Makefile, CI workflows, or pre-commit hooks exist.
 
 ## Architecture
 
-Five pillars under `src/flowmaticdb/`:
+Five pillars under `src/flowmaticdb/`, plus one optional module:
 
 - **`dialects/`** — SQL generation (`SQLDialect` base, `PostgresqlDialect`, `SQLiteDialect`). `SQLDialect` is the largest file (~713 lines).
 - **`adapters/`** — Connection wrappers (`SQLiteAdapter`, `PsycopgAdapter`, `AsyncpgAdapter`, `MySQLAdapter`). Connection lifecycle is four methods: `_connect()` opens, `_disconnect()` unconditionally drops the driver handle, `close()` is the public teardown that honours the `persistent`/`optimize` options, and `is_connected()` reports liveness. All four are **per calling thread** except `close()`, which is global. `reconnect()` is concrete on `AdapterABC` (`_disconnect()`, errors suppressed, then `_connect()`); `AsyncpgAdapter` overrides it to restart its loop thread first, since its `close()` tears the loop down too.
 - **`query/`** — Fluent query builders (`SelectQuery`, `InsertQuery`, `UpdateQuery`, `DeleteQuery`, `CreateTableQuery`, `AlterTableQuery`, `DropTableQuery`, `CreateIndexQuery`, `DropIndexQuery`). Mixins: `WhereMixin`, `HavingMixin`, `JoinsMixin`, etc.
 - **`result/`** — Result set abstraction (`Result`, `SQLite3Result`, `PsycopgResult`, `AsyncpgResult`, `MySQLResult`). Methods: `fetch_dict()`, `fetch_dicts()`, `scalar()`, `fetch_object()`, `fetch_objects()`, `columns()`.
 - **`migrations/`** — Schema migrations. Subclass `MigrationABC` (`up(db)`/`down(db)` abstract — the `DB` is passed in, not stored on the instance; `in_transaction()` returns `True` by default). `Migrator(db, migrations_dir, migrations_table="migrations")` drives them: `init()`, `up()`, `down()`, `create(name)`.
+- **`mcp.py`** (optional) — MCP server over a connected database: `FlowmaticDBMCP(db, name)` builds a `FastMCP`, registers fourteen tools (`driver`, `execute_sql`, `list_tables`, `describe_table`, `select`, `insert`, `update`, `delete`, and begin/commit/rollback for both transactions and savepoints), and `run(transport)` hands off to it. This is the **only** module that imports an optional dependency at module scope, which is safe because nothing else in the package imports it — a missing `mcp` extra is reachable only by importing `flowmaticdb.mcp` directly. Notes for changing it:
+  - **Tools are sync methods on the class**, registered through `add_tool()` in `__init__`. `FastMCP` calls a sync tool inline on the event loop thread rather than handing it to a worker pool, so every tool shares one thread and therefore one connection — which is what makes the transaction tools work at all. An `async def` tool, or a transport that spreads a session across processes (`stateless_http`), would break that.
+  - **Never route a where through `where_operator()`.** It interpolates the identifier straight into the SQL unescaped (see `SQLDialect._build_single_condition()`, the non-`ConditionEnum` branch). `_apply_where()` maps each operator string onto its own `where_*` method instead and refuses an unknown one, so identifiers stay escaped and values stay bound. `_apply_having()` is the same dispatch over `having_*`, duplicated rather than shared — which mirrors `WhereMixin`/`HavingMixin` themselves, and is what keeps it free of the `getattr` a shared version would need. An operator added to one belongs in the other.
+  - **`select`'s `group_by` is honest about what the engines do, not smoothed over.** It reads whole rows, so a grouped select is `SELECT * … GROUP BY`: fine on SQLite and on MySQL without `ONLY_FULL_GROUP_BY`, rejected by PostgreSQL and a stock MySQL. `havings` with no `group_by` is likewise refused by SQLite as a non-aggregate query. Both surface as the engine's own error. Giving the tool aggregate columns is what would fix this properly.
+  - `update` and `delete` refuse an empty `wheres` array; an unfiltered write has to go through `execute_sql`.
+  - `_json_safe()` makes every value JSON-encodable — datetimes ISO 8601, `Decimal`/`UUID` as strings, `SqlABC` via `raw_sql()` (a parsed column default can be a `CurrentTimestamp`), and binary as text or base64. Control bytes force base64: they survive a UTF-8 decode and would otherwise read as text.
 
 User-facing facade: `from flowmaticdb.database import DB`
 
@@ -137,8 +143,9 @@ A `DB`/adapter is shared between threads; a **connection is not**.
 
 ## Testing
 
-- **Testing**: 524 tests pass without any database (unit + SQLite in-memory/file integration, including `test_threading.py`, `test_connection_limit.py` and `test_introspection.py`); 577 with both servers up — the 54 skips are exactly the PostgreSQL (36) and MySQL (18) suites.
+- **Testing**: 611 tests pass without any database (unit + SQLite in-memory/file integration, including `test_threading.py`, `test_connection_limit.py`, `test_introspection.py` and `test_mcp.py`); the 56 skips are exactly the PostgreSQL and MySQL suites, which run once both servers are up.
 - **Unit tests** (no database): `test_dialect_*.py`, `test_*_query.py`, `test_conditions.py`, `test_joins.py`, `test_expressions.py`, `test_query_with_params.py`, `test_result_abstract.py`, `test_json_and_datetime_types.py`, `test_boolean_types.py`, `test_index_queries.py`, `test_type_parsing.py`. `test_introspection.py` is a hybrid: the `describe_table()` half runs against in-memory SQLite, the PostgreSQL/MySQL half only asserts on rendered SQL.
+- **MCP tests**: `test_mcp.py` drives `FlowmaticDBMCP` against SQLite `:memory:` — every tool, every where operator, the transaction/savepoint ladder, and the tool list and argument validation through `server.list_tools()`/`call_tool()`. The module `pytest.importorskip`s `mcp`, so it skips wholesale without the extra.
 - **Integration tests**: `test_integration_sqlite.py` uses SQLite `:memory:` — no external services needed. `test_integration_postgres.py` requires a PostgreSQL service on `localhost:5432` (skipped via `pytestmark` when unreachable; run `docker compose up -d postgres`). `test_integration_mysql.py` requires a MySQL service on `localhost:3306` with `MYSQL_ALLOW_EMPTY_PASSWORD=yes` (skipped via a session-scoped fixture when unreachable; the suite auto-creates the `flowmaticdb` database and drops all user tables between tests).
 - **Fixtures**: `conftest.py` provides `sql_dialect`, `sqlite_dialect`, `pg_dialect`, `mysql_dialect`. The postgres integration module defines its own `pg_adapter` / `pg_dialect` / `pg_db` yield fixtures. The mysql integration module defines `mysql_adapter` / `mysql_dialect` (the latter overrides the conftest one within that module) plus a session-scoped `_flowmaticdb_database` bootstrap fixture.
 - **DDL has no parameters** — use `adapter.exec(qwp.query)` not `adapter.query_with_params()`.
