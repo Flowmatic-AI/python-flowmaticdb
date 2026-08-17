@@ -17,10 +17,12 @@ from flowmaticdb._helpers import (
     raw,
     sub_query,
 )
+from flowmaticdb._mcp import MCP, Where
 from flowmaticdb._query_with_params import QueryWithParams
 from flowmaticdb.query.expressions import PostgresArray
 
 __all__ = [
+    "MCP",
     "AdapterError",
     "ConnectionLimitError",
     "DatabaseError",
@@ -29,6 +31,7 @@ __all__ = [
     "QueryError",
     "QueryWithParams",
     "QueryWithParamsError",
+    "Where",
     "alias",
     "current_timestamp",
     "escape_ansi",

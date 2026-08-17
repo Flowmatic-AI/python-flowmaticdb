@@ -1217,7 +1217,7 @@ handler, and not from every worker at once.
 
 ## MCP Server
 
-`flowmaticdb.mcp` exposes a connected database over the [Model Context
+`MCP` exposes a connected database over the [Model Context
 Protocol](https://modelcontextprotocol.io), so an MCP client can read and write
 it through the same query builders. It needs the `mcp` extra:
 
@@ -1229,13 +1229,13 @@ Point it at a database and run it — the class builds the server, registers eve
 tool and hands the transport off to `FastMCP`:
 
 ```python
+from flowmaticdb import MCP
 from flowmaticdb.database import DB
-from flowmaticdb.mcp import FlowmaticDBMCP
 
 db = DB.connect_postgresql("mydb", host="localhost", user="postgres")
 
-FlowmaticDBMCP(db, "mydb").run()                     # stdio, the default
-FlowmaticDBMCP(db, "mydb").run("streamable-http")    # or over HTTP
+MCP(db, "mydb").run()                     # stdio, the default
+MCP(db, "mydb").run("streamable-http")    # or over HTTP
 ```
 
 `server` is the underlying `FastMCP` instance, for adding tools of your own or
@@ -1268,8 +1268,8 @@ when they do not hold text — base64 encoded.
 
 ### Conditions
 
-`select`, `update` and `delete` filter through an array of wheres, joined with
-`AND`. Each one is `{"identifier": ..., "operator": ..., "value": ...}`, where the
+`select`, `update` and `delete` filter through an array of wheres. Each one is
+`{"identifier": ..., "operator": ..., "value": ..., "chain": ...}`, where the
 identifier is a column name or a `["table", "column"]` pair:
 
 ```json
@@ -1292,6 +1292,26 @@ and empty checks ignore the value. Every operator maps onto its `where_*` builde
 method, so identifiers are escaped and values travel as bound parameters — an
 unknown operator is refused rather than passed through to the SQL.
 
+`chain` is how a where joins the one before it: `and`, the default, or `or`
+(spelled loosely — `AND`/`&&`/`all` and `OR`/`||`/`any` all read the same way, and
+an unknown chain is refused like an unknown operator). It is read off the second
+and later wheres; the first one starts the clause, so its chain is ignored:
+
+```json
+{
+  "table": "users",
+  "wheres": [
+    {"identifier": "name", "operator": "=", "value": "Alice"},
+    {"identifier": "name", "operator": "=", "value": "Bob", "chain": "or"}
+  ]
+}
+```
+
+The wheres are joined left to right with no parentheses of their own, so
+`[a, or b, c]` builds `a OR b AND c` — which SQL then reads as `a OR (b AND c)`.
+Nothing in the array can open a group; a condition that needs its own parentheses
+belongs in `execute_sql`, or in `where_group()` on the query builder directly.
+
 `update` and `delete` require at least one where. An unfiltered write is still
 reachable, through `execute_sql`, but it has to be asked for by name.
 
@@ -1299,8 +1319,8 @@ reachable, through `execute_sql`, but it has to be asked for by name.
 
 `select` also takes `group_by`, a list of columns to collapse the rows on, and
 `havings` — the same array-of-conditions shape as `wheres`, with the same
-operators, applied to what the grouping produced rather than to the rows going
-into it:
+operators and the same `chain`, applied to what the grouping produced rather than
+to the rows going into it:
 
 ```json
 {
@@ -1737,13 +1757,13 @@ A leading underscore on a module name marks it as a private implementation detai
 - `snapshot_result()` — Import from `flowmaticdb.result`
 
 - `MigrationABC`, `Migrator` — Import from `flowmaticdb.migrations`
-- `FlowmaticDBMCP`, `Where` — Import from `flowmaticdb.mcp`. This is the one module that imports an optional dependency at module scope, so importing it without the `mcp` extra installed raises `ModuleNotFoundError` — nothing else in the package touches it
+- `MCP`, `Where` — Import from `flowmaticdb`. The `mcp` extra is only needed to construct an `MCP`; `MCP(db, name)` raises `ModuleNotFoundError` without it, and nothing else in the package touches the dependency
 
 ```python
 from flowmaticdb.adapters import PsycopgAdapter, AsyncpgAdapter, MySQLAdapter
 from flowmaticdb.result import PsycopgResult, MySQLResult, snapshot_result
 from flowmaticdb.migrations import MigrationABC, Migrator
-from flowmaticdb.mcp import FlowmaticDBMCP, Where
+from flowmaticdb import MCP, Where
 from flowmaticdb import raw, identifier, alias, expression, sub_query, current_timestamp, now
 ```
 

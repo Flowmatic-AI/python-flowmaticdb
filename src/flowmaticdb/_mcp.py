@@ -5,11 +5,8 @@ from dataclasses import dataclass
 from datetime import date, datetime
 from datetime import time as time_of_day
 from decimal import Decimal
-from typing import Any, Literal
+from typing import TYPE_CHECKING, Any, Literal
 from uuid import UUID
-
-from mcp.server.fastmcp import FastMCP
-from mcp.types import ToolAnnotations
 
 from flowmaticdb import QueryError
 from flowmaticdb.database import DatabaseABC
@@ -18,10 +15,19 @@ from flowmaticdb.query.enums import ReferentialActionEnum, TypeEnum
 from flowmaticdb.query.expressions import SqlABC
 from flowmaticdb.result import ResultABC
 
+if TYPE_CHECKING:
+    from mcp.server.fastmcp import FastMCP
+
 _OPERATOR_DOC = """
-A where is {"identifier": ..., "operator": ..., "value": ...}; every where in the
-array is joined with AND. The identifier is a column name, or a ["table", "column"]
-pair for a qualified one.
+A where is {"identifier": ..., "operator": ..., "value": ..., "chain": ...}. The
+identifier is a column name, or a ["table", "column"] pair for a qualified one.
+
+"chain" is how a where joins the one before it: "and" (the default) or "or". It is
+read off the second and later wheres -- the first one starts the clause, so its chain
+is ignored. The wheres are joined left to right in the order they are given, with no
+parentheses and no precedence of their own, so [a, or b, c] is `a OR b AND c`, which
+SQL reads as `a OR (b AND c)`. Group with parentheses by putting the OR branch in its
+own query, or by writing the whole condition through execute_sql.
 
 Operators: "=", "!=", "<", "<=", ">", ">=", "like", "not like", "ilike", "not ilike",
 "in", "not in", "between", "not between", "is null", "is not null", "contains",
@@ -41,6 +47,9 @@ _KNOWN_OPERATORS = (
     '"not contains", "starts with", "ends with", "glob", "not glob", "regex", '
     '"not regex", "empty", "not empty"'
 )
+_AND_CHAINS = ("and", "&&", "all")
+_OR_CHAINS = ("or", "||", "any")
+_KNOWN_CHAINS = '"and", "&&", "all", "or", "||", "any"'
 
 
 @dataclass
@@ -48,10 +57,22 @@ class Where:
     identifier: str | list[str]
     operator: str
     value: Any = None
+    chain: str = "and"
 
 
 def _normalize_operator(operator: str) -> str:
     return " ".join(operator.replace("_", " ").lower().split())
+
+
+def _chains_with_or(chain: str) -> bool:
+    normalized = _normalize_operator(chain)
+    if normalized in _OR_CHAINS:
+        return True
+
+    if normalized in _AND_CHAINS:
+        return False
+
+    raise QueryError(f'unknown chain "{chain}"; supported chains are {_KNOWN_CHAINS}')
 
 
 def _require_list(operator: str, value: Any) -> list[Any]:
@@ -69,8 +90,10 @@ def _require_range(operator: str, value: Any) -> list[Any]:
     return values
 
 
-class FlowmaticDBMCP:
+class MCP:
     def __init__(self, db: DatabaseABC, name: str = "flowmaticdb") -> None:
+        from mcp.server.fastmcp import FastMCP
+
         self._db = db
         self._savepoints: list[str] = []
         self._server = FastMCP(name)
@@ -89,6 +112,8 @@ class FlowmaticDBMCP:
         self._server.run(transport)
 
     def _register_tools(self) -> None:
+        from mcp.types import ToolAnnotations
+
         read_only = ToolAnnotations(readOnlyHint=True, idempotentHint=True, openWorldHint=False)
         writes = ToolAnnotations(readOnlyHint=False, destructiveHint=False, idempotentHint=False, openWorldHint=False)
         destructive = ToolAnnotations(readOnlyHint=False, destructiveHint=True, idempotentHint=False, openWorldHint=False)
@@ -490,6 +515,12 @@ The transaction around it stays open.""",
             self._apply_where(query, where)
 
     def _apply_where(self, query: SelectQuery | UpdateQuery | DeleteQuery, where: Where) -> None:
+        if _chains_with_or(where.chain):
+            self._apply_or_where(query, where)
+        else:
+            self._apply_and_where(query, where)
+
+    def _apply_and_where(self, query: SelectQuery | UpdateQuery | DeleteQuery, where: Where) -> None:
         operator = _normalize_operator(where.operator)
         identifier = where.identifier
         value = where.value
@@ -551,6 +582,68 @@ The transaction around it stays open.""",
         else:
             raise QueryError(f'unknown operator "{where.operator}"; supported operators are {_KNOWN_OPERATORS}')
 
+    def _apply_or_where(self, query: SelectQuery | UpdateQuery | DeleteQuery, where: Where) -> None:
+        operator = _normalize_operator(where.operator)
+        identifier = where.identifier
+        value = where.value
+
+        if operator in _EQUALS_OPERATORS:
+            query.or_where_equals(identifier, value)
+        elif operator in _NOT_EQUALS_OPERATORS:
+            query.or_where_not_equals(identifier, value)
+        elif operator == "<":
+            query.or_where_less_than(identifier, value)
+        elif operator == "<=":
+            query.or_where_less_than_or_equals(identifier, value)
+        elif operator == ">":
+            query.or_where_greater_than(identifier, value)
+        elif operator == ">=":
+            query.or_where_greater_than_or_equals(identifier, value)
+        elif operator == "like":
+            query.or_where_like(identifier, value)
+        elif operator == "not like":
+            query.or_where_not_like(identifier, value)
+        elif operator == "ilike":
+            query.or_where_like(identifier, value, case_insensitive=True)
+        elif operator == "not ilike":
+            query.or_where_not_like(identifier, value, case_insensitive=True)
+        elif operator == "in":
+            query.or_where_in(identifier, _require_list(operator, value))
+        elif operator == "not in":
+            query.or_where_not_in(identifier, _require_list(operator, value))
+        elif operator == "between":
+            bounds = _require_range(operator, value)
+            query.or_where_between(identifier, bounds[0], bounds[1])
+        elif operator == "not between":
+            bounds = _require_range(operator, value)
+            query.or_where_not_between(identifier, bounds[0], bounds[1])
+        elif operator == "is null":
+            query.or_where_is_null(identifier)
+        elif operator == "is not null":
+            query.or_where_is_not_null(identifier)
+        elif operator == "contains":
+            query.or_where_contains(identifier, value)
+        elif operator == "not contains":
+            query.or_where_not_contains(identifier, value)
+        elif operator == "starts with":
+            query.or_where_starts_with(identifier, value)
+        elif operator == "ends with":
+            query.or_where_ends_with(identifier, value)
+        elif operator == "glob":
+            query.or_where_glob(identifier, value)
+        elif operator == "not glob":
+            query.or_where_not_glob(identifier, value)
+        elif operator == "regex":
+            query.or_where_regex(identifier, value)
+        elif operator == "not regex":
+            query.or_where_not_regex(identifier, value)
+        elif operator == "empty":
+            query.or_where_empty(identifier)
+        elif operator == "not empty":
+            query.or_where_not_empty(identifier)
+        else:
+            raise QueryError(f'unknown operator "{where.operator}"; supported operators are {_KNOWN_OPERATORS}')
+
     def _apply_havings(self, query: SelectQuery, havings: list[Where] | None) -> None:
         if havings is None:
             return
@@ -559,6 +652,12 @@ The transaction around it stays open.""",
             self._apply_having(query, having)
 
     def _apply_having(self, query: SelectQuery, having: Where) -> None:
+        if _chains_with_or(having.chain):
+            self._apply_or_having(query, having)
+        else:
+            self._apply_and_having(query, having)
+
+    def _apply_and_having(self, query: SelectQuery, having: Where) -> None:
         operator = _normalize_operator(having.operator)
         identifier = having.identifier
         value = having.value
@@ -617,5 +716,67 @@ The transaction around it stays open.""",
             query.having_empty(identifier)
         elif operator == "not empty":
             query.having_not_empty(identifier)
+        else:
+            raise QueryError(f'unknown operator "{having.operator}"; supported operators are {_KNOWN_OPERATORS}')
+
+    def _apply_or_having(self, query: SelectQuery, having: Where) -> None:
+        operator = _normalize_operator(having.operator)
+        identifier = having.identifier
+        value = having.value
+
+        if operator in _EQUALS_OPERATORS:
+            query.or_having_equals(identifier, value)
+        elif operator in _NOT_EQUALS_OPERATORS:
+            query.or_having_not_equals(identifier, value)
+        elif operator == "<":
+            query.or_having_less_than(identifier, value)
+        elif operator == "<=":
+            query.or_having_less_than_or_equals(identifier, value)
+        elif operator == ">":
+            query.or_having_greater_than(identifier, value)
+        elif operator == ">=":
+            query.or_having_greater_than_or_equals(identifier, value)
+        elif operator == "like":
+            query.or_having_like(identifier, value)
+        elif operator == "not like":
+            query.or_having_not_like(identifier, value)
+        elif operator == "ilike":
+            query.or_having_like(identifier, value, case_insensitive=True)
+        elif operator == "not ilike":
+            query.or_having_not_like(identifier, value, case_insensitive=True)
+        elif operator == "in":
+            query.or_having_in(identifier, _require_list(operator, value))
+        elif operator == "not in":
+            query.or_having_not_in(identifier, _require_list(operator, value))
+        elif operator == "between":
+            bounds = _require_range(operator, value)
+            query.or_having_between(identifier, bounds[0], bounds[1])
+        elif operator == "not between":
+            bounds = _require_range(operator, value)
+            query.or_having_not_between(identifier, bounds[0], bounds[1])
+        elif operator == "is null":
+            query.or_having_is_null(identifier)
+        elif operator == "is not null":
+            query.or_having_is_not_null(identifier)
+        elif operator == "contains":
+            query.or_having_contains(identifier, value)
+        elif operator == "not contains":
+            query.or_having_not_contains(identifier, value)
+        elif operator == "starts with":
+            query.or_having_starts_with(identifier, value)
+        elif operator == "ends with":
+            query.or_having_ends_with(identifier, value)
+        elif operator == "glob":
+            query.or_having_glob(identifier, value)
+        elif operator == "not glob":
+            query.or_having_not_glob(identifier, value)
+        elif operator == "regex":
+            query.or_having_regex(identifier, value)
+        elif operator == "not regex":
+            query.or_having_not_regex(identifier, value)
+        elif operator == "empty":
+            query.or_having_empty(identifier)
+        elif operator == "not empty":
+            query.or_having_not_empty(identifier)
         else:
             raise QueryError(f'unknown operator "{having.operator}"; supported operators are {_KNOWN_OPERATORS}')
