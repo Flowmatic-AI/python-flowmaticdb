@@ -88,9 +88,6 @@ class ModelMeta:
 
         return column
 
-    def has_relation(self, field_name: str) -> bool:
-        return field_name in self._relations
-
     def relation(self, field_name: str) -> ModelRelation:
         relation = self._relations.get(field_name)
 

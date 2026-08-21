@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any, Generic, Self, TypeVar
 
 from flowmaticdb.orm._loader import load_relations
+from flowmaticdb.orm._meta import model_meta
 from flowmaticdb.orm._model import Model
 from flowmaticdb.orm._tree import RelationTree
 from flowmaticdb.query import SelectQuery
@@ -19,12 +20,12 @@ ModelT = TypeVar("ModelT", bound=Model)
 
 class SelectModelQuery(SelectQuery, Generic[ModelT]):
     def __init__(self, dialect: DialectABC, database: DatabaseABC, model: type[ModelT]) -> None:
-        super().__init__(dialect, model.orm_meta().table, database)
+        super().__init__(dialect, model_meta(model).table, database)
 
         self._model = model
         self._tree = RelationTree(model)
 
-        self.columns(model.orm_meta().column_identifiers())
+        self.columns(model_meta(model).column_identifiers())
 
     def relation(self, path: str, customize: Callable[[SelectQuery], Any] | None = None) -> Self:
         self._tree.add(path, customize)

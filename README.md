@@ -901,8 +901,8 @@ snapshot = snapshot_result(live_result)  # Can be iterated repeatedly
 | `fetch_dict()` | `dict \| None` | Next row as dict, or `None` |
 | `fetch_dicts()` | `list[dict]` | All remaining rows |
 | `scalar(column=None)` | `Any` | First value of next row |
-| `fetch_object(cls, args)` | `object \| None` | Hydrate next row into object |
-| `fetch_objects(cls, args)` | `list[object]` | Hydrate all rows into objects |
+| `fetch_object(target_class, args)` | `object \| None` | Hydrate next row into object |
+| `fetch_objects(target_class, args)` | `list[object]` | Hydrate all rows into objects |
 | `columns()` | `dict[str, str]` | Column name → type mapping |
 
 ---
@@ -998,6 +998,16 @@ metadata; `column(column_name=...)` maps a field to a differently named column, 
 also takes `primary_key=True` / `auto_increment=True` for a key that needs both a custom
 name and one of those flags. A plain field with no metadata maps to a column of its own
 name.
+
+`describe_table()` reads the model's own table back off a database, exactly as
+[`db.describe_table()`](#describe_table) does:
+
+```python
+description = Country.describe_table(db)
+
+for column in description.columns:
+    print(column.name, column.type, column.not_null, column.default)
+```
 
 ### Relations
 

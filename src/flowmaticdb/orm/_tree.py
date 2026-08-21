@@ -4,6 +4,7 @@ from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
 
 from flowmaticdb import ModelError
+from flowmaticdb.orm._meta import model_meta
 from flowmaticdb.orm._relation import ModelRelation
 
 if TYPE_CHECKING:
@@ -37,7 +38,7 @@ class RelationNode:
         node = self._children.get(field_name)
 
         if node is None:
-            node = RelationNode(self._relation.target.orm_meta().relation(field_name))
+            node = RelationNode(model_meta(self._relation.target).relation(field_name))
             self._children[field_name] = node
 
         return node
@@ -65,7 +66,7 @@ class RelationTree:
         node = self._nodes.get(segments[0])
 
         if node is None:
-            node = RelationNode(self._model.orm_meta().relation(segments[0]))
+            node = RelationNode(model_meta(self._model).relation(segments[0]))
             self._nodes[segments[0]] = node
 
         for segment in segments[1:]:

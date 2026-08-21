@@ -77,7 +77,11 @@ class Database(DatabaseABC):
                 max_concurrent_connections=max_concurrent_connections,
                 acquire_connection_timeout=acquire_connection_timeout,
             )
-        return cls(adapter, PostgresqlDialect(version=adapter.version(), options=options or {}), ensure_always_connected)
+        return cls(
+            adapter,
+            PostgresqlDialect(version=adapter.version(), options=options or {}),
+            ensure_always_connected,
+        )
 
     @classmethod
     def _connect_mysql_family(
@@ -176,8 +180,8 @@ class Database(DatabaseABC):
             acquire_connection_timeout=acquire_connection_timeout,
         )
 
-    @classmethod
-    def drivers(cls) -> list[str]:
+    @staticmethod
+    def drivers() -> list[str]:
         import importlib.util
 
         drivers: list[str] = []

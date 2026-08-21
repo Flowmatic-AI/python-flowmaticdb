@@ -4,6 +4,7 @@ from collections.abc import Sequence
 from typing import TYPE_CHECKING, Any, Generic, Self, TypeVar
 
 from flowmaticdb import ModelError
+from flowmaticdb.orm._meta import model_meta
 from flowmaticdb.orm._model import Model
 from flowmaticdb.orm._tree import RelationTree
 from flowmaticdb.orm.enums import RelationEnum
@@ -95,7 +96,7 @@ class InsertModelQuery(Generic[ModelT]):
                 continue
 
             target = related[0]
-            owner_column = parent.orm_meta().column_by_name(relation.owner_column)
+            owner_column = model_meta(type(parent)).column_by_name(relation.owner_column)
             parent.set_column_value(owner_column, target.key_value(relation.target_column))
 
     def _cascade_has(self, parents: Sequence[Model], node: RelationNode, emulate_prepare: bool) -> None:
@@ -112,7 +113,7 @@ class InsertModelQuery(Generic[ModelT]):
             owner_value = parent.key_value(relation.owner_column)
 
             for child in related:
-                target_column = child.orm_meta().column_by_name(relation.target_column)
+                target_column = model_meta(type(child)).column_by_name(relation.target_column)
                 child.set_column_value(target_column, owner_value)
 
                 if id(child) not in seen:
@@ -164,7 +165,7 @@ class InsertModelQuery(Generic[ModelT]):
         if len(models) == 0:
             return
 
-        meta = models[0].orm_meta()
+        meta = model_meta(type(models[0]))
         primary_key = self._resolve_auto_increment_primary_key(meta) if self._fill_primary_keys else None
 
         if primary_key is not None:

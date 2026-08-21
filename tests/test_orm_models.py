@@ -5,6 +5,7 @@ from typing import Annotated
 import pytest
 
 from flowmaticdb import ModelError
+from flowmaticdb.database import DB
 from flowmaticdb.orm import (
     AutoIncrement,
     BelongsTo,
@@ -19,6 +20,7 @@ from flowmaticdb.orm import (
     has_many,
     has_one,
     many_to_many,
+    model_meta,
 )
 
 
@@ -124,16 +126,16 @@ class Category(Model):
 
 
 def test_table_resolution() -> None:
-    assert Widget.orm_meta().table == "widgets"
+    assert model_meta(Widget).table == "widgets"
 
 
 def test_column_mapping_defaults_to_field_name() -> None:
-    name_column = Author.orm_meta().column_by_field("name")
+    name_column = model_meta(Author).column_by_field("name")
     assert name_column.column_name == "name"
 
 
 def test_column_renaming_via_column_helper() -> None:
-    meta = Widget.orm_meta()
+    meta = model_meta(Widget)
     label_column = meta.column_by_field("label")
 
     assert label_column.column_name == "widget_label"
@@ -141,14 +143,14 @@ def test_column_renaming_via_column_helper() -> None:
 
 
 def test_auto_increment_detection() -> None:
-    id_column = Widget.orm_meta().column_by_field("id")
+    id_column = model_meta(Widget).column_by_field("id")
 
     assert id_column.primary_key is True
     assert id_column.auto_increment is True
 
 
 def test_primary_key_annotation_detection() -> None:
-    slug_column = Label.orm_meta().column_by_field("slug")
+    slug_column = model_meta(Label).column_by_field("slug")
 
     assert slug_column.primary_key is True
     assert slug_column.auto_increment is False
@@ -156,53 +158,53 @@ def test_primary_key_annotation_detection() -> None:
 
 def test_missing_table_raises_model_error() -> None:
     with pytest.raises(ModelError):
-        NoTableModel.orm_meta()
+        model_meta(NoTableModel)
 
 
 def test_missing_primary_key_raises_model_error() -> None:
     with pytest.raises(ModelError):
-        _ = NoPrimaryKeyModel.orm_meta().primary_keys
+        _ = model_meta(NoPrimaryKeyModel).primary_keys
 
 
 def test_missing_primary_key_raises_on_primary_key_property_too() -> None:
     with pytest.raises(ModelError):
-        _ = NoPrimaryKeyModel.orm_meta().primary_key
+        _ = model_meta(NoPrimaryKeyModel).primary_key
 
 
 def test_composite_primary_key_allowed_on_primary_keys() -> None:
-    primary_keys = CompositeKeyModel.orm_meta().primary_keys
+    primary_keys = model_meta(CompositeKeyModel).primary_keys
 
     assert {column.column_name for column in primary_keys} == {"tenant_id", "item_id"}
 
 
 def test_composite_primary_key_rejected_by_primary_key_property() -> None:
     with pytest.raises(ModelError):
-        _ = CompositeKeyModel.orm_meta().primary_key
+        _ = model_meta(CompositeKeyModel).primary_key
 
 
 def test_has_one_default_key_names() -> None:
-    relation = Author.orm_meta().relation("profile")
+    relation = model_meta(Author).relation("profile")
 
     assert relation.owner_column == "id"
     assert relation.target_column == "author_id"
 
 
 def test_has_many_default_key_names() -> None:
-    relation = Author.orm_meta().relation("books")
+    relation = model_meta(Author).relation("books")
 
     assert relation.owner_column == "id"
     assert relation.target_column == "author_id"
 
 
 def test_belongs_to_default_key_names() -> None:
-    relation = Book.orm_meta().relation("author")
+    relation = model_meta(Book).relation("author")
 
     assert relation.owner_column == "author_id"
     assert relation.target_column == "id"
 
 
 def test_many_to_many_default_key_names() -> None:
-    relation = Author.orm_meta().relation("tags")
+    relation = model_meta(Author).relation("tags")
 
     assert relation.through == "author_tags"
     assert relation.owner_column == "id"
@@ -212,28 +214,28 @@ def test_many_to_many_default_key_names() -> None:
 
 
 def test_has_one_explicit_key_override() -> None:
-    relation = Cabinet.orm_meta().relation("lock")
+    relation = model_meta(Cabinet).relation("lock")
 
     assert relation.owner_column == "code"
     assert relation.target_column == "cabinet_code"
 
 
 def test_has_many_explicit_key_override() -> None:
-    relation = Cabinet.orm_meta().relation("drawers")
+    relation = model_meta(Cabinet).relation("drawers")
 
     assert relation.owner_column == "code"
     assert relation.target_column == "owner_code"
 
 
 def test_belongs_to_explicit_key_override() -> None:
-    relation = Badge.orm_meta().relation("holder")
+    relation = model_meta(Badge).relation("holder")
 
     assert relation.owner_column == "holder_code"
     assert relation.target_column == "code"
 
 
 def test_many_to_many_explicit_key_override() -> None:
-    relation = Cabinet.orm_meta().relation("labels")
+    relation = model_meta(Cabinet).relation("labels")
 
     assert relation.through == "cabinet_labels"
     assert relation.owner_column == "code"
@@ -243,14 +245,14 @@ def test_many_to_many_explicit_key_override() -> None:
 
 
 def test_forward_referenced_relation_target_resolves() -> None:
-    relation = Author.orm_meta().relation("books")
+    relation = model_meta(Author).relation("books")
 
     assert relation.target is Book
 
 
 def test_self_referencing_relation_targets_resolve() -> None:
-    parent_relation = Category.orm_meta().relation("parent")
-    children_relation = Category.orm_meta().relation("children")
+    parent_relation = model_meta(Category).relation("parent")
+    children_relation = model_meta(Category).relation("children")
 
     assert parent_relation.target is Category
     assert children_relation.target is Category
@@ -261,7 +263,7 @@ def test_self_referencing_relation_targets_resolve() -> None:
 
 
 def test_column_identifiers() -> None:
-    identifiers = Widget.orm_meta().column_identifiers()
+    identifiers = model_meta(Widget).column_identifiers()
 
     assert identifiers == {"id": ["widgets", "id"], "widget_label": ["widgets", "widget_label"]}
 
@@ -342,3 +344,13 @@ def test_relation_tree_add_malformed_path_raises_model_error() -> None:
 
     with pytest.raises(ModelError):
         tree.add("books..name")
+
+
+def test_describe_table_reads_the_table_description_off_the_database() -> None:
+    db = DB.connect_sqlite(":memory:")
+    db.create_table("widgets").identity("id").string("widget_label").execute()
+
+    description = Widget.describe_table(db)
+
+    assert [column.name for column in description.columns] == ["id", "widget_label"]
+    assert description == db.describe_table("widgets")

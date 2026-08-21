@@ -175,22 +175,27 @@ class ModelRelation:
         return f"{self._owner.__name__}.{self._field_name}"
 
     def _default_foreign_key(self, model: type[Model]) -> str:
-        return f"{_snake_case(model.__name__)}_{model.orm_meta().primary_key.column_name}"
+        return f"{_snake_case(model.__name__)}_{self._primary_key(model)}"
+
+    def _primary_key(self, model: type[Model]) -> str:
+        from flowmaticdb.orm._meta import model_meta
+
+        return model_meta(model).primary_key.column_name
 
     def _resolve(self) -> None:
         if self._info.relation == RelationEnum.BELONGS_TO:
             self._owner_column = self._info.foreign_key or self._default_foreign_key(self._target)
-            self._target_column = self._info.primary_key or self._target.orm_meta().primary_key.column_name
+            self._target_column = self._info.primary_key or self._primary_key(self._target)
             return
 
         if self._info.relation == RelationEnum.MANY_TO_MANY:
-            self._owner_column = self._info.primary_key or self._owner.orm_meta().primary_key.column_name
-            self._target_column = self._info.foreign_key or self._target.orm_meta().primary_key.column_name
+            self._owner_column = self._info.primary_key or self._primary_key(self._owner)
+            self._target_column = self._info.foreign_key or self._primary_key(self._target)
             self._through_owner_column = self._info.through_primary_key or self._default_foreign_key(self._owner)
             self._through_target_column = self._info.through_foreign_key or self._default_foreign_key(self._target)
             return
 
-        self._owner_column = self._info.primary_key or self._owner.orm_meta().primary_key.column_name
+        self._owner_column = self._info.primary_key or self._primary_key(self._owner)
         self._target_column = self._info.foreign_key or self._default_foreign_key(self._owner)
 
 

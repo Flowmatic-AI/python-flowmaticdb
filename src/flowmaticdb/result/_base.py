@@ -4,10 +4,10 @@ from abc import ABC, abstractmethod
 from typing import Any
 
 
-def _row_to_object(row: dict[str, Any], cls: type, constructor_args: list[Any]) -> object | dict[str, Any]:
-    if cls is dict or cls is None:
+def _row_to_object(row: dict[str, Any], target_class: type, constructor_args: list[Any]) -> object | dict[str, Any]:
+    if target_class is dict or target_class is None:
         return dict(row)
-    obj: object = cls(*constructor_args)
+    obj: object = target_class(*constructor_args)
     obj.__dict__.update(row)
     return obj
 
@@ -31,14 +31,18 @@ class ResultABC(ABC):
             return [row.get(column) for row in rows]
         return [next(iter(row.values()), None) for row in rows]
 
-    def fetch_object(self, cls: type = dict, constructor_args: list[Any] | None = None) -> object | dict[str, Any] | None:
+    def fetch_object(
+        self, target_class: type = dict, constructor_args: list[Any] | None = None
+    ) -> object | dict[str, Any] | None:
         row = self.fetch_dict()
         if row is None:
             return None
-        return _row_to_object(row, cls, constructor_args or [])
+        return _row_to_object(row, target_class, constructor_args or [])
 
-    def fetch_objects(self, cls: type = dict, constructor_args: list[Any] | None = None) -> list[object | dict[str, Any]]:
-        return [_row_to_object(row, cls, constructor_args or []) for row in self.fetch_dicts()]
+    def fetch_objects(
+        self, target_class: type = dict, constructor_args: list[Any] | None = None
+    ) -> list[object | dict[str, Any]]:
+        return [_row_to_object(row, target_class, constructor_args or []) for row in self.fetch_dicts()]
 
     @abstractmethod
     def fetch_dict(self) -> dict[str, Any] | None:

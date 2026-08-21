@@ -1,13 +1,16 @@
 from __future__ import annotations
 
-from typing import Any, ClassVar, Self
+from typing import TYPE_CHECKING, Any, ClassVar, Self
 
 from pydantic import BaseModel, PrivateAttr
 
-from flowmaticdb import ModelError
-from flowmaticdb.orm._column import ModelColumn
-from flowmaticdb.orm._meta import ModelMeta, model_meta
-from flowmaticdb.orm._relation import ModelRelation
+from flowmaticdb.orm._meta import model_meta
+
+if TYPE_CHECKING:
+    from flowmaticdb.database import DatabaseABC
+    from flowmaticdb.orm._column import ModelColumn
+    from flowmaticdb.orm._relation import ModelRelation
+    from flowmaticdb.query.ddl import TableDescription
 
 
 class Model(BaseModel):
@@ -16,15 +19,14 @@ class Model(BaseModel):
     _loaded_relations: set[str] = PrivateAttr(default_factory=set)
 
     @classmethod
-    def orm_meta(cls) -> ModelMeta:
-        return model_meta(cls)
+    def describe_table(cls, database: DatabaseABC) -> TableDescription:
+        return database.describe_table(model_meta(cls).table)
 
     @classmethod
     def from_row(cls, row: dict[str, Any]) -> Self:
-        meta = cls.orm_meta()
         values: dict[str, Any] = {}
 
-        for column in meta.columns:
+        for column in model_meta(cls).columns:
             if column.column_name in row:
                 values[column.field_name] = row[column.column_name]
 
@@ -38,27 +40,13 @@ class Model(BaseModel):
         self.__pydantic_fields_set__.add(column.field_name)
 
     def column_values(self) -> dict[str, Any]:
-        return {column.column_name: self.__dict__[column.field_name] for column in self.orm_meta().columns}
+        return {column.column_name: self.__dict__[column.field_name] for column in model_meta(type(self)).columns}
 
     def key_value(self, column_name: str) -> Any:
-        return self.__dict__[self.orm_meta().column_by_name(column_name).field_name]
+        return self.__dict__[model_meta(type(self)).column_by_name(column_name).field_name]
 
     def primary_key_value(self) -> Any:
-        return self.column_value(self.orm_meta().primary_key)
-
-    def require_primary_key_value(self) -> Any:
-        value = self.primary_key_value()
-
-        if value is None:
-            raise ModelError(
-                f"{type(self).__name__} has no {self.orm_meta().primary_key.column_name} value: it has to be "
-                "inserted before it can be referenced, updated or deleted"
-            )
-
-        return value
-
-    def relation_value(self, relation: ModelRelation) -> Any:
-        return self.__dict__[relation.field_name]
+        return self.column_value(model_meta(type(self)).primary_key)
 
     def related_models(self, relation: ModelRelation) -> list[Model]:
         value = self.__dict__[relation.field_name]

@@ -19,6 +19,7 @@ from flowmaticdb.orm import (
     has_many,
     has_one,
     many_to_many,
+    model_meta,
 )
 
 show_sql = False
@@ -173,7 +174,7 @@ create_schema(db)
 
 heading("Model metadata")
 
-meta = User.orm_meta()
+meta = model_meta(User)
 print(f"table            {meta.table}")
 print(f"columns          {[c.column_name for c in meta.columns]}")
 print(f"primary key      {meta.primary_key.column_name} (auto increment: {meta.primary_key.auto_increment})")
@@ -184,14 +185,17 @@ for name in ["country", "profile", "posts"]:
     relation = meta.relation(name)
     print(
         f"  {name:<8} {relation.relation.value:<14} {meta.table}.{relation.owner_column} = "
-        f"{relation.target.orm_meta().table}.{relation.target_column}"
+        f"{model_meta(relation.target).table}.{relation.target_column}"
     )
 
-tags = Post.orm_meta().relation("tags")
+tags = model_meta(Post).relation("tags")
 print(
     f"  {'tags':<8} {tags.relation.value:<14} posts.{tags.owner_column} = {tags.through}.{tags.through_owner_column}"
     f", {tags.through}.{tags.through_target_column} = tags.{tags.target_column}"
 )
+
+described = User.describe_table(db)
+print(f"describe_table   {[(column.name, column.type) for column in described.columns]}")
 
 heading("INSERT with cascades")
 

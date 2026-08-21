@@ -5,6 +5,7 @@ from typing import TYPE_CHECKING, Any, Generic, Self, TypeVar
 
 from flowmaticdb import ModelError
 from flowmaticdb.orm._loader import load_relations, owner_keys
+from flowmaticdb.orm._meta import model_meta
 from flowmaticdb.orm._tree import RelationTree
 from flowmaticdb.orm.enums import RelationEnum
 
@@ -24,7 +25,7 @@ class DeleteModelQuery(Generic[ModelT]):
             classes = {type(model) for model in models}
 
             if len(classes) > 1:
-                names = ", ".join(sorted(cls.__name__ for cls in classes))
+                names = ", ".join(sorted(model_class.__name__ for model_class in classes))
                 raise ModelError(f"delete_models requires a single model class, got {names}")
 
         self._dialect = dialect
@@ -91,7 +92,7 @@ def _process_has_relation(
     pending: list[tuple[RelationNode, list[Any]]],
 ) -> None:
     relation = node.relation
-    table = relation.target.orm_meta().table
+    table = model_meta(relation.target).table
     keys = owner_keys(owners, relation.owner_column)
 
     if len(keys) == 0:
@@ -121,7 +122,7 @@ def _delete_belongs_to_target(
         return
 
     relation = node.relation
-    table = relation.target.orm_meta().table
+    table = model_meta(relation.target).table
 
     if len(node.children) == 0:
         _delete_where_in(database, table, relation.target_column, keys, emulate_prepare)
@@ -143,7 +144,7 @@ def _load_by_column(
     keys: list[Any],
     emulate_prepare: bool,
 ) -> list[Model]:
-    meta = model.orm_meta()
+    meta = model_meta(model)
     query = database.select(meta.table).columns(meta.column_identifiers())
     query.where_in([meta.table, column_name], keys)
 
@@ -156,7 +157,7 @@ def _delete_owners(
     models: Sequence[Model],
     emulate_prepare: bool,
 ) -> None:
-    meta = model.orm_meta()
+    meta = model_meta(model)
     primary_keys = meta.primary_keys
 
     if len(primary_keys) == 1:

@@ -4,6 +4,7 @@ from collections.abc import Sequence
 from typing import TYPE_CHECKING, Any, Generic, Self, TypeVar
 
 from flowmaticdb import ModelError
+from flowmaticdb.orm._meta import model_meta
 from flowmaticdb.orm._relation import ModelRelation
 from flowmaticdb.orm._tree import RelationNode, RelationTree
 
@@ -22,7 +23,7 @@ class UpdateModelQuery(Generic[ModelT]):
             classes = {type(model) for model in models}
 
             if len(classes) > 1:
-                names = ", ".join(sorted(cls.__name__ for cls in classes))
+                names = ", ".join(sorted(model_class.__name__ for model_class in classes))
                 raise ModelError(f"update_models requires a single model class, got {names}")
 
         self._dialect = dialect
@@ -47,7 +48,7 @@ class UpdateModelQuery(Generic[ModelT]):
         if self._model is None:
             return self._models
 
-        meta = self._model.orm_meta()
+        meta = model_meta(self._model)
 
         if self._column_names is None:
             columns = meta.columns
@@ -65,7 +66,7 @@ class UpdateModelQuery(Generic[ModelT]):
 
 
 def _update_model(database: DatabaseABC, model: Model, columns: list[ModelColumn], emulate_prepare: bool) -> None:
-    meta = model.orm_meta()
+    meta = model_meta(type(model))
     primary_key_values: list[tuple[str, Any]] = []
 
     for primary_key in meta.primary_keys:
@@ -98,7 +99,7 @@ def _update_model(database: DatabaseABC, model: Model, columns: list[ModelColumn
 
 def _cascade(database: DatabaseABC, parents: Sequence[Model], node: RelationNode, emulate_prepare: bool) -> None:
     relation = node.relation
-    meta = relation.target.orm_meta()
+    meta = model_meta(relation.target)
     children = _related(parents, relation)
 
     if len(children) == 0:

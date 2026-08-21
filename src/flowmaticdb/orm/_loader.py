@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections.abc import Sequence
 from typing import TYPE_CHECKING, Any
 
+from flowmaticdb.orm._meta import model_meta
 from flowmaticdb.orm.enums import RelationEnum
 
 if TYPE_CHECKING:
@@ -85,7 +86,7 @@ def _load_direct(
     emulate_prepare: bool,
 ) -> dict[Any, list[Model]]:
     relation = node.relation
-    meta = relation.target.orm_meta()
+    meta = model_meta(relation.target)
 
     identifiers = meta.column_identifiers()
     identifiers[relation.target_column] = [meta.table, relation.target_column]
@@ -111,7 +112,7 @@ def _load_many_to_many(
     emulate_prepare: bool,
 ) -> dict[Any, list[Model]]:
     relation = node.relation
-    meta = relation.target.orm_meta()
+    meta = model_meta(relation.target)
     through = relation.through
 
     identifiers = meta.column_identifiers()
