@@ -9,7 +9,7 @@ description = "A Python database abstraction layer supporting PostgreSQL, SQLite
 readme = "README.md"
 requires-python = ">=3.11"
 license = {text = "MIT"}
-keywords = ["database", "abstraction", "sql", "postgresql", "sqlite", "mysql", "mariadb", "migrations"]
+keywords = ["database", "abstraction", "orm", "sql", "postgresql", "sqlite", "mysql", "mariadb", "migrations"]
 
 authors = [
     {name = "Flowmatic"},
@@ -48,6 +48,9 @@ mysql = [
 mcp = [
     "mcp>=1.12",
 ]
+orm = [
+    "pydantic>=2.0",
+]
 dev = [
     "pytest>=7.0",
     "mypy>=1.0",
@@ -58,6 +61,7 @@ all = [
     "mcp>=1.12",
     "mysql-connector-python>=9.0",
     "psycopg[binary]>=3.1",
+    "pydantic>=2.0",
 ]
 
 [tool.setuptools.packages.find]

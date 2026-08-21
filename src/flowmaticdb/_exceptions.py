@@ -18,3 +18,6 @@ class QueryError(Exception):
 
 class QueryWithParamsError(Exception):
     pass
+
+class ModelError(Exception):
+    pass

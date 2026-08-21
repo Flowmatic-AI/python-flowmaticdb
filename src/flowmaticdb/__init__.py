@@ -3,6 +3,7 @@ from flowmaticdb._exceptions import (
     ConnectionLimitError,
     DatabaseError,
     DriverError,
+    ModelError,
     QueryError,
     QueryWithParamsError,
 )
@@ -27,6 +28,7 @@ __all__ = [
     "ConnectionLimitError",
     "DatabaseError",
     "DriverError",
+    "ModelError",
     "PostgresArray",
     "QueryError",
     "QueryWithParams",

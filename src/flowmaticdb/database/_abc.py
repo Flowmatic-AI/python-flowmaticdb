@@ -7,12 +7,20 @@ from flowmaticdb._threading import ThreadLocalStore
 from flowmaticdb.result import ResultABC
 
 T = TypeVar("T")
+ModelT = TypeVar("ModelT", bound="Model")
 
 if TYPE_CHECKING:
     from flowmaticdb import QueryWithParams
     from flowmaticdb.adapters import AdapterABC
     from flowmaticdb.database._table import Table
     from flowmaticdb.dialects import DialectABC
+    from flowmaticdb.orm import (
+        DeleteModelQuery,
+        InsertModelQuery,
+        Model,
+        SelectModelQuery,
+        UpdateModelQuery,
+    )
     from flowmaticdb.query import (
         AlterTableQuery,
         CreateIndexQuery,
@@ -148,6 +156,31 @@ class DatabaseABC:
     def select_sub_query(self, sub_query: Any, alias: str) -> SelectQuery:
         from flowmaticdb.query.expressions import SubQuery
         return self.select(SubQuery(sub_query, alias))
+
+    def select_models(self, model: type[ModelT]) -> SelectModelQuery[ModelT]:
+        from flowmaticdb.orm import SelectModelQuery
+        return SelectModelQuery(self._dialect, self, model)
+
+    def insert_models(self, models: list[ModelT]) -> InsertModelQuery[ModelT]:
+        from flowmaticdb.orm import InsertModelQuery
+        return InsertModelQuery(self._dialect, self, models)
+
+    def insert_model(self, model: ModelT) -> InsertModelQuery[ModelT]:
+        return self.insert_models([model])
+
+    def update_models(self, models: list[ModelT]) -> UpdateModelQuery[ModelT]:
+        from flowmaticdb.orm import UpdateModelQuery
+        return UpdateModelQuery(self._dialect, self, models)
+
+    def update_model(self, model: ModelT) -> UpdateModelQuery[ModelT]:
+        return self.update_models([model])
+
+    def delete_models(self, models: list[ModelT]) -> DeleteModelQuery[ModelT]:
+        from flowmaticdb.orm import DeleteModelQuery
+        return DeleteModelQuery(self._dialect, self, models)
+
+    def delete_model(self, model: ModelT) -> DeleteModelQuery[ModelT]:
+        return self.delete_models([model])
 
     def insert(self, table: str | list[str]) -> InsertQuery:
         from flowmaticdb.query import InsertQuery

@@ -33,6 +33,7 @@ pip install flowmaticdb                 # SQLite works out of the box
 pip install "flowmaticdb[postgres]"     # PostgreSQL via psycopg
 pip install "flowmaticdb[asyncpg]"      # PostgreSQL via asyncpg (the default driver)
 pip install "flowmaticdb[mysql]"        # MySQL and MariaDB
+pip install "flowmaticdb[orm]"          # the model layer, via pydantic
 pip install "flowmaticdb[all]"          # every driver
 pip install "flowmaticdb[dev]"          # pytest, mypy, ruff
 ```
@@ -952,6 +953,248 @@ table.is_empty()    # bool
 ```python
 table = db.table("users")
 ```
+
+---
+
+## ORM
+
+A model layer over the query builder: declare `Model` subclasses, describe how they
+relate, and let `select_models()` / `insert_models()` / `update_models()` /
+`delete_models()` handle the batched loading and cascades. It needs the `orm` extra:
+
+```bash
+pip install "flowmaticdb[orm]"
+```
+
+Everything below works identically on PostgreSQL, SQLite and MySQL/MariaDB — the
+dialects handle the auto-increment read-back and the identifier quoting.
+
+### Declaring a model
+
+```python
+from __future__ import annotations
+
+from typing import Annotated
+
+from flowmaticdb.orm import AutoIncrement, Model, PrimaryKey, column
+
+
+class Role(Model):
+    __table__ = "roles"
+    id: AutoIncrement = None
+    label: Annotated[str, column(column_name="display_label")]
+
+
+class Country(Model):
+    __table__ = "countries"
+    code: PrimaryKey[str]
+    name: str
+```
+
+`__table__` names the table the model maps to. `AutoIncrement` (an auto-incrementing
+`int | None` primary key the database fills in) and `PrimaryKey[...]` (a primary key of
+any other type you supply yourself, `str` here) both mark a column through `Annotated`
+metadata; `column(column_name=...)` maps a field to a differently named column, and
+also takes `primary_key=True` / `auto_increment=True` for a key that needs both a custom
+name and one of those flags. A plain field with no metadata maps to a column of its own
+name.
+
+### Relations
+
+```python
+from __future__ import annotations
+
+from flowmaticdb.orm import (
+    AutoIncrement,
+    BelongsTo,
+    HasMany,
+    HasOne,
+    ManyToMany,
+    Model,
+    belongs_to,
+    has_many,
+    has_one,
+    many_to_many,
+)
+
+
+class Profile(Model):
+    __table__ = "profiles"
+    id: AutoIncrement = None
+    user_id: int | None = None
+    bio: str
+
+
+class Comment(Model):
+    __table__ = "comments"
+    id: AutoIncrement = None
+    post_id: int | None = None
+    body: str
+
+
+class Post(Model):
+    __table__ = "posts"
+    id: AutoIncrement = None
+    user_id: int | None = None
+    title: str
+    author: BelongsTo[User] = belongs_to()
+    comments: HasMany[Comment] = has_many()
+
+
+class User(Model):
+    __table__ = "users"
+    id: AutoIncrement = None
+    name: str
+    profile: HasOne[Profile] = has_one()
+    posts: HasMany[Post] = has_many()
+    roles: ManyToMany[Role] = many_to_many("user_roles")
+```
+
+The four kinds and the key each looks for by default:
+
+| Kind | Owner side | Target side | Default key |
+|------|-----------|-------------|-------------|
+| `has_one` / `has_many` | owner's primary key | foreign key on the target table | `<owner model>_<owner primary key>`, e.g. `user_id` |
+| `belongs_to` | foreign key on the owner table | target's primary key | `<target model>_<target primary key>`, e.g. `user_id` |
+| `many_to_many` | owner's primary key | target's primary key | both halves default the same way on the `through` table |
+
+Every one of them takes explicit overrides instead of the default:
+
+```python
+posts: HasMany[Post] = has_many(foreign_key="author_id")
+author: BelongsTo[User] = belongs_to(foreign_key="author_id")
+roles: ManyToMany[Role] = many_to_many(
+    "user_roles",
+    through_primary_key="user_id",
+    through_foreign_key="role_id",
+)
+```
+
+### Querying
+
+```python
+users = (
+    db.select_models(User)
+    .relation("posts")
+    .relation("posts.comments")
+    .where_equals("name", "Alice")
+    .fetch_models()
+)
+```
+
+`relation("posts.comments")` creates the intermediate `"posts"` node itself if it is not
+already there, so a chain of dotted paths is enough to describe a whole tree in one call.
+`SelectModelQuery` subclasses `SelectQuery`, so the entire builder surface —
+`where_*`/`having_*`, `join`/`inner_join`/`left_join`, `order_by_asc`/`order_by_desc`,
+`limit`/`offset`, `group_by`, `distinct`, `count()`, `to_query_with_params()`,
+`execute()` — chains on it exactly as in [Query Building](#query-building); `.relation()`
+is the only addition, and `.columns()` overrides the column list the query seeds itself
+with.
+
+A second argument to `relation()` customizes that one relation's own query:
+
+```python
+db.select_models(User).relation("posts", lambda query: query.order_by_desc("id").limit(5)).fetch_models()
+```
+
+```python
+user = db.select_models(User).where_equals("id", 1).fetch_model()  # first match, or None
+```
+
+`fetch_model()` is `fetch_models()` with `limit(1)`, returning the first model or `None`.
+
+#### Loading strategy
+
+Every relation, at every depth, is loaded with **one batched `SELECT ... WHERE ... IN
+(...)` per relation node** — never a join — no matter how many parent rows were loaded:
+a `posts.comments` path runs one query for all the posts and one query for all their
+comments, not one query per parent. That is what keeps row counts stable (a join would
+multiply a post row by its comment count) and avoids N+1 (a per-parent query). Every row
+becomes a model through `from_row()`, which runs full pydantic validation — on the
+top-level select's own rows and on every relation load underneath it alike.
+
+### Inserting
+
+```python
+alice = User(name="Alice")
+alice.posts = [Post(title="First"), Post(title="Second")]
+
+db.insert_models([alice]).relation("posts").execute()
+# INSERT INTO "users" (...) VALUES (...)          — alice.id is read back onto the model
+# INSERT INTO "posts" (...) VALUES (...), (...)   — each post's user_id is set to alice.id first
+```
+
+Relations cascade in the order that keeps every foreign key satisfiable:
+
+1. `belongs_to` targets with no primary key yet are inserted first (recursing into their
+   own relations), then their key is copied onto the owner's foreign key.
+2. The owner rows are inserted.
+3. `has_one` / `has_many` children have the owner's key copied onto their foreign key,
+   then are inserted (recursing into their own relations).
+4. `many_to_many` targets with no primary key yet are inserted (recursing), then one row
+   per (owner, target) pair is inserted into the `through` table.
+
+Relations only cascade for the paths passed to `relation()`, over whatever models are
+actually sitting on that field — an empty or unset relation is simply skipped.
+
+By default (`fill_primary_keys(True)`, the default), every model in the whole call —
+roots and every cascaded relation alike — is inserted one at a time, and when its meta
+has a single auto-increment primary key, the returned row is written straight back onto
+it. Turn it off to batch same-shaped models into one `.values(...)` call per level
+instead, at the cost of no primary key read-back:
+
+```python
+db.insert_models([User(name="Alice"), User(name="Bob")]).fill_primary_keys(False).execute()
+# INSERT INTO "users" (...) VALUES (...), (...)   — one statement, ids not read back
+```
+
+`insert_model(alice)` is `insert_models([alice])`. Every model passed to one call has to
+be the same class, and an empty list is a no-op.
+
+### Updating
+
+```python
+alice.name = "Alicia"
+db.update_models([alice]).execute()
+# UPDATE "users" SET "name" = ? WHERE "id" = ?
+
+db.update_models([alice]).columns(["name"]).relation("posts").execute()
+```
+
+One `UPDATE` per model: every non-primary-key column is written, and the `WHERE` matches
+every primary key column against its current value — raising `ModelError` if a model has
+never been inserted. `columns([...])` restricts which columns get written, for the models
+passed to that call only; primary keys are never among them, and an unknown column name
+raises `ModelError`. `relation()` cascades the same `UPDATE` to every loaded related
+model, recursing into deeper paths; for `many_to_many` only the target rows are updated —
+the join table itself is left alone. `update_model(alice)` is `update_models([alice])`.
+
+### Deleting
+
+```python
+db.delete_models([alice]).relation("posts.comments").relation("roles").execute()
+# DELETE FROM "comments" WHERE "post_id" IN (...)     — alice's posts' comments, deepest first
+# DELETE FROM "posts" WHERE "user_id" IN (...)        — then alice's posts
+# DELETE FROM "user_roles" WHERE "user_id" IN (...)   — join rows only, the roles themselves are untouched
+# DELETE FROM "users" WHERE "id" IN (...)             — alice last
+```
+
+Deletes run bottom-up so no foreign key is ever left dangling: `has_one` / `has_many`
+subtrees delete deepest-first, `many_to_many` deletes only the `through` rows for the
+owners being deleted — the target rows may still belong to other owners — and
+`belongs_to` targets are collected before the owners are deleted, then deleted last,
+after the owners are gone:
+
+```python
+post = db.select_models(Post).relation("author").where_equals("id", 10).fetch_model()
+db.delete_models([post]).relation("author").execute()
+# DELETE FROM "posts" WHERE "id" IN (...)   — the post first
+# DELETE FROM "users" WHERE "id" IN (...)   — its author last
+```
+
+A `many_to_many` node cannot have children — `.relation("roles.permissions")` raises
+`ModelError`, since nothing past the join table would actually be deleted.
+`delete_model(alice)` is `delete_models([alice])`.
 
 ---
 

@@ -1,0 +1,47 @@
+from __future__ import annotations
+
+from typing import TYPE_CHECKING, Any, Generic, Self, TypeVar
+
+from flowmaticdb.orm._loader import load_relations
+from flowmaticdb.orm._model import Model
+from flowmaticdb.orm._tree import RelationTree
+from flowmaticdb.query import SelectQuery
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
+
+    from flowmaticdb.database import DatabaseABC
+    from flowmaticdb.dialects import DialectABC
+
+
+ModelT = TypeVar("ModelT", bound=Model)
+
+
+class SelectModelQuery(SelectQuery, Generic[ModelT]):
+    def __init__(self, dialect: DialectABC, database: DatabaseABC, model: type[ModelT]) -> None:
+        super().__init__(dialect, model.orm_meta().table, database)
+
+        self._model = model
+        self._tree = RelationTree(model)
+
+        self.columns(model.orm_meta().column_identifiers())
+
+    def relation(self, path: str, customize: Callable[[SelectQuery], Any] | None = None) -> Self:
+        self._tree.add(path, customize)
+
+        return self
+
+    def fetch_models(self, emulate_prepare: bool = False) -> list[ModelT]:
+        rows = self.execute(emulate_prepare).fetch_dicts()
+        models = [self._model.from_row(row) for row in rows]
+        parents: list[Model] = list(models)
+
+        load_relations(self._database, parents, self._tree.nodes, emulate_prepare)
+
+        return models
+
+    def fetch_model(self, emulate_prepare: bool = False) -> ModelT | None:
+        self.limit(1)
+        models = self.fetch_models(emulate_prepare)
+
+        return models[0] if len(models) > 0 else None
