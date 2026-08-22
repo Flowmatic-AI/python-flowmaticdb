@@ -4,7 +4,7 @@ from collections.abc import Sequence
 from typing import TYPE_CHECKING, Any, Generic, Self, TypeVar
 
 from flowmaticdb import ModelError
-from flowmaticdb.orm._meta import model_meta
+from flowmaticdb.orm._mapper import model_mapper
 from flowmaticdb.orm._model import Model
 from flowmaticdb.orm._tree import RelationTree
 from flowmaticdb.orm.enums import RelationEnum
@@ -13,6 +13,7 @@ if TYPE_CHECKING:
     from flowmaticdb.database import DatabaseABC
     from flowmaticdb.dialects import DialectABC
     from flowmaticdb.orm._column import ModelColumn
+    from flowmaticdb.orm._mapper import ModelMapper
     from flowmaticdb.orm._meta import ModelMeta
     from flowmaticdb.orm._relation import ModelRelation
     from flowmaticdb.orm._tree import RelationNode
@@ -84,20 +85,22 @@ class InsertModelQuery(Generic[ModelT]):
     def _cascade_belongs_to(self, parents: Sequence[Model], node: RelationNode, emulate_prepare: bool) -> None:
         relation = node.relation
         targets = self._collect_related(parents, relation)
-        pending = [target for target in targets if target.primary_key_value() is None]
+        pending = [target for target in targets if model_mapper(type(target)).primary_key_value(target) is None]
 
         if len(pending) > 0:
             self._cascade_insert(pending, node.children, emulate_prepare)
 
         for parent in parents:
-            related = parent.related_models(relation)
+            mapper = model_mapper(type(parent))
+            related = mapper.related_models(parent, relation)
 
             if len(related) == 0:
                 continue
 
             target = related[0]
-            owner_column = model_meta(type(parent)).column_by_name(relation.owner_column)
-            parent.set_column_value(owner_column, target.key_value(relation.target_column))
+            owner_column = mapper.meta.column_by_name(relation.owner_column)
+            target_value = model_mapper(type(target)).key_value(target, relation.target_column)
+            mapper.set_column_value(parent, owner_column, target_value)
 
     def _cascade_has(self, parents: Sequence[Model], node: RelationNode, emulate_prepare: bool) -> None:
         relation = node.relation
@@ -105,16 +108,18 @@ class InsertModelQuery(Generic[ModelT]):
         children: list[Model] = []
 
         for parent in parents:
-            related = parent.related_models(relation)
+            mapper = model_mapper(type(parent))
+            related = mapper.related_models(parent, relation)
 
             if len(related) == 0:
                 continue
 
-            owner_value = parent.key_value(relation.owner_column)
+            owner_value = mapper.key_value(parent, relation.owner_column)
 
             for child in related:
-                target_column = model_meta(type(child)).column_by_name(relation.target_column)
-                child.set_column_value(target_column, owner_value)
+                child_mapper = model_mapper(type(child))
+                target_column = child_mapper.meta.column_by_name(relation.target_column)
+                child_mapper.set_column_value(child, target_column, owner_value)
 
                 if id(child) not in seen:
                     seen.add(id(child))
@@ -126,7 +131,7 @@ class InsertModelQuery(Generic[ModelT]):
     def _cascade_many_to_many(self, parents: Sequence[Model], node: RelationNode, emulate_prepare: bool) -> None:
         relation = node.relation
         targets = self._collect_related(parents, relation)
-        pending = [target for target in targets if target.primary_key_value() is None]
+        pending = [target for target in targets if model_mapper(type(target)).primary_key_value(target) is None]
 
         if len(pending) > 0:
             self._cascade_insert(pending, node.children, emulate_prepare)
@@ -134,13 +139,15 @@ class InsertModelQuery(Generic[ModelT]):
         rows: list[dict[str, Any]] = []
 
         for parent in parents:
-            owner_value = parent.key_value(relation.owner_column)
+            mapper = model_mapper(type(parent))
+            owner_value = mapper.key_value(parent, relation.owner_column)
 
-            for target in parent.related_models(relation):
+            for target in mapper.related_models(parent, relation):
+                target_mapper = model_mapper(type(target))
                 rows.append(
                     {
                         relation.through_owner_column: owner_value,
-                        relation.through_target_column: target.key_value(relation.target_column),
+                        relation.through_target_column: target_mapper.key_value(target, relation.target_column),
                     }
                 )
 
@@ -152,7 +159,7 @@ class InsertModelQuery(Generic[ModelT]):
         collected: list[Model] = []
 
         for parent in parents:
-            for related in parent.related_models(relation):
+            for related in model_mapper(type(parent)).related_models(parent, relation):
                 if id(related) in seen:
                     continue
 
@@ -165,22 +172,22 @@ class InsertModelQuery(Generic[ModelT]):
         if len(models) == 0:
             return
 
-        meta = model_meta(type(models[0]))
-        primary_key = self._resolve_auto_increment_primary_key(meta) if self._fill_primary_keys else None
+        mapper = model_mapper(type(models[0]))
+        primary_key = self._resolve_auto_increment_primary_key(mapper.meta) if self._fill_primary_keys else None
 
         if primary_key is not None:
             for model in models:
-                self._insert_returning(model, meta, primary_key, emulate_prepare)
+                self._insert_returning(mapper, model, primary_key, emulate_prepare)
 
             return
 
         if self._fill_primary_keys:
             for model in models:
-                self._insert_plain(model, meta, emulate_prepare)
+                self._insert_plain(mapper, model, emulate_prepare)
 
             return
 
-        self._insert_batch(models, meta, emulate_prepare)
+        self._insert_batch(mapper, models, emulate_prepare)
 
     def _resolve_auto_increment_primary_key(self, meta: ModelMeta) -> ModelColumn | None:
         try:
@@ -193,19 +200,26 @@ class InsertModelQuery(Generic[ModelT]):
 
         return primary_keys[0]
 
-    def _insert_values(self, model: Model, meta: ModelMeta) -> dict[str, Any]:
-        values = model.column_values()
+    def _insert_values(self, mapper: ModelMapper[Model], model: Model) -> dict[str, Any]:
+        values = mapper.to_row(model)
 
-        for column in meta.columns:
+        for column in mapper.meta.columns:
             if column.auto_increment and values[column.column_name] is None:
                 del values[column.column_name]
 
         return values
 
-    def _insert_returning(self, model: Model, meta: ModelMeta, primary_key: ModelColumn, emulate_prepare: bool) -> None:
+    def _insert_returning(
+        self,
+        mapper: ModelMapper[Model],
+        model: Model,
+        primary_key: ModelColumn,
+        emulate_prepare: bool,
+    ) -> None:
+        meta = mapper.meta
         result = (
             self._database.insert(meta.table)
-            .values(self._insert_values(model, meta))
+            .values(self._insert_values(mapper, model))
             .returning([])
             .last_insert_id(primary_key.column_name)
             .execute(emulate_prepare)
@@ -220,20 +234,21 @@ class InsertModelQuery(Generic[ModelT]):
 
         for column_name, value in row.items():
             if column_name in known_columns:
-                model.set_column_value(meta.column_by_name(column_name), value)
+                mapper.set_column_value(model, meta.column_by_name(column_name), value)
 
-    def _insert_plain(self, model: Model, meta: ModelMeta, emulate_prepare: bool) -> None:
-        self._database.insert(meta.table).values(self._insert_values(model, meta)).execute(emulate_prepare)
+    def _insert_plain(self, mapper: ModelMapper[Model], model: Model, emulate_prepare: bool) -> None:
+        table = mapper.meta.table
+        self._database.insert(table).values(self._insert_values(mapper, model)).execute(emulate_prepare)
 
-    def _insert_batch(self, models: Sequence[Model], meta: ModelMeta, emulate_prepare: bool) -> None:
+    def _insert_batch(self, mapper: ModelMapper[Model], models: Sequence[Model], emulate_prepare: bool) -> None:
         batches: dict[frozenset[str], list[dict[str, Any]]] = {}
 
         for model in models:
-            values = self._insert_values(model, meta)
+            values = self._insert_values(mapper, model)
             batches.setdefault(frozenset(values), []).append(values)
 
         for batch in batches.values():
-            self._database.insert(meta.table).values(*batch).execute(emulate_prepare)
+            self._database.insert(mapper.meta.table).values(*batch).execute(emulate_prepare)
 
     def _single_result(self, result: ResultABC | list[ResultABC]) -> ResultABC:
         if isinstance(result, list):

@@ -3,7 +3,7 @@ from __future__ import annotations
 from collections.abc import Sequence
 from typing import TYPE_CHECKING, Any
 
-from flowmaticdb.orm._meta import model_meta
+from flowmaticdb.orm._mapper import model_mapper
 from flowmaticdb.orm.enums import RelationEnum
 
 if TYPE_CHECKING:
@@ -20,7 +20,7 @@ def owner_keys(parents: Sequence[Model], owner_column: str) -> list[Any]:
     seen: set[Any] = set()
 
     for parent in parents:
-        key = parent.key_value(owner_column)
+        key = model_mapper(type(parent)).key_value(parent, owner_column)
 
         if key is None or key in seen:
             continue
@@ -86,7 +86,8 @@ def _load_direct(
     emulate_prepare: bool,
 ) -> dict[Any, list[Model]]:
     relation = node.relation
-    meta = model_meta(relation.target)
+    mapper = model_mapper(relation.target)
+    meta = mapper.meta
 
     identifiers = meta.column_identifiers()
     identifiers[relation.target_column] = [meta.table, relation.target_column]
@@ -100,7 +101,7 @@ def _load_direct(
     grouped: dict[Any, list[Model]] = {}
 
     for row in query.execute(emulate_prepare).fetch_dicts():
-        grouped.setdefault(row[relation.target_column], []).append(relation.target.from_row(row))
+        grouped.setdefault(row[relation.target_column], []).append(mapper.to_model(row))
 
     return grouped
 
@@ -112,7 +113,8 @@ def _load_many_to_many(
     emulate_prepare: bool,
 ) -> dict[Any, list[Model]]:
     relation = node.relation
-    meta = model_meta(relation.target)
+    mapper = model_mapper(relation.target)
+    meta = mapper.meta
     through = relation.through
 
     identifiers = meta.column_identifiers()
@@ -140,7 +142,7 @@ def _load_many_to_many(
         instance = instances.get(identity)
 
         if instance is None:
-            instance = relation.target.from_row(row)
+            instance = mapper.to_model(row)
             instances[identity] = instance
 
         if (owner_key, identity) in linked:
@@ -156,10 +158,11 @@ def _attach(parents: Sequence[Model], node: RelationNode, grouped: dict[Any, lis
     relation = node.relation
 
     for parent in parents:
-        matches = grouped.get(parent.key_value(relation.owner_column), [])
+        mapper = model_mapper(type(parent))
+        matches = grouped.get(mapper.key_value(parent, relation.owner_column), [])
 
         if relation.many:
-            parent.set_relation(relation, list(matches))
+            mapper.set_relation(parent, relation, list(matches))
             continue
 
-        parent.set_relation(relation, matches[0] if len(matches) > 0 else None)
+        mapper.set_relation(parent, relation, matches[0] if len(matches) > 0 else None)

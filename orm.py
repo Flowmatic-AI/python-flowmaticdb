@@ -19,6 +19,7 @@ from flowmaticdb.orm import (
     has_many,
     has_one,
     many_to_many,
+    model_mapper,
     model_meta,
 )
 
@@ -194,7 +195,7 @@ print(
     f", {tags.through}.{tags.through_target_column} = tags.{tags.target_column}"
 )
 
-described = User.describe_table(db)
+described = model_mapper(User).describe_table(db)
 print(f"describe_table   {[(column.name, column.type) for column in described.columns]}")
 
 heading("INSERT with cascades")
@@ -360,8 +361,9 @@ partial = (
 )
 
 assert partial is not None
-print(f"posts loaded         {partial.is_relation_loaded('posts')}")
-print(f"profile loaded       {partial.is_relation_loaded('profile')}")
+mapper = model_mapper(User)
+print(f"posts loaded         {mapper.is_relation_loaded(partial, 'posts')}")
+print(f"profile loaded       {mapper.is_relation_loaded(partial, 'profile')}")
 
 heading("UPDATE")
 

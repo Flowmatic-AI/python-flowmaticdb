@@ -999,15 +999,9 @@ also takes `primary_key=True` / `auto_increment=True` for a key that needs both 
 name and one of those flags. A plain field with no metadata maps to a column of its own
 name.
 
-`describe_table()` reads the model's own table back off a database, exactly as
-[`db.describe_table()`](#describe_table) does:
-
-```python
-description = Country.describe_table(db)
-
-for column in description.columns:
-    print(column.name, column.type, column.not_null, column.default)
-```
+A model declares that mapping and nothing else — it carries no methods of its own.
+Everything that acts on one goes through its mapper, described in
+[The mapper](#the-mapper) below.
 
 ### Relations
 
@@ -1080,6 +1074,65 @@ roles: ManyToMany[Role] = many_to_many(
 )
 ```
 
+### The mapper
+
+`model_mapper(model)` returns the model class's `ModelMapper` — the one object that maps
+rows onto models and reads their fields back out. It is cached per class, so asking for
+it again is free:
+
+```python
+from flowmaticdb.orm import model_mapper
+
+mapper = model_mapper(User)
+
+mapper.meta                  # the ModelMeta behind it — columns, keys, relations
+mapper.model                 # User
+```
+
+Rows in, rows out — `to_model()` runs full pydantic validation, keys the row by column
+name, and ignores any key the model maps no field to:
+
+```python
+alice = mapper.to_model({"id": 1, "name": "Alice", "not_a_column": "ignored"})
+users = mapper.to_models(rows)
+mapper.to_row(alice)         # {"id": 1, "name": "Alice"} — keyed by column name
+```
+
+Reading and writing a field by the column or relation it maps to, rather than by the
+attribute name the model happens to use for it:
+
+```python
+name = mapper.meta.column_by_name("name")
+
+mapper.primary_key_value(alice)                # alice.id
+mapper.column_value(alice, name)               # alice.name
+mapper.set_column_value(alice, name, "Alicia")
+mapper.key_value(alice, "name")                # the same read, by column name alone
+
+# a renamed column is reachable under the column's name, not the field's
+model_mapper(Role).key_value(role, "display_label")
+
+posts = mapper.meta.relation("posts")
+
+mapper.related_models(alice, posts)            # always a list, empty if unset or None
+mapper.set_relation(alice, posts, [Post(title="First")])
+mapper.is_relation_loaded(alice, "posts")      # True
+```
+
+`is_relation_loaded()` answers whether that relation has a value that was actually put
+there — by a `relation()` load, an insert cascade, or you — rather than the default it
+was declared with, and raises `ModelError` for a field name that names no relation.
+
+`describe_table()` reads the model's own table back off a database, exactly as
+[`db.describe_table()`](#describe_table) does:
+
+```python
+description = model_mapper(Country).describe_table(db)
+
+for column in description.columns:
+    print(column.name, column.type, column.not_null, column.default)
+```
+
 ### Querying
 
 ```python
@@ -1120,8 +1173,8 @@ Every relation, at every depth, is loaded with **one batched `SELECT ... WHERE .
 a `posts.comments` path runs one query for all the posts and one query for all their
 comments, not one query per parent. That is what keeps row counts stable (a join would
 multiply a post row by its comment count) and avoids N+1 (a per-parent query). Every row
-becomes a model through `from_row()`, which runs full pydantic validation — on the
-top-level select's own rows and on every relation load underneath it alike.
+becomes a model through the mapper's `to_model()`, which runs full pydantic validation —
+on the top-level select's own rows and on every relation load underneath it alike.
 
 ### Inserting
 

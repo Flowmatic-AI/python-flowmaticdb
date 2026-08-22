@@ -2,6 +2,7 @@ from flowmaticdb.orm._column import AutoIncrement, ColumnInfo, ModelColumn, Prim
 from flowmaticdb.orm._delete import DeleteModelQuery
 from flowmaticdb.orm._insert import InsertModelQuery
 from flowmaticdb.orm._loader import load_relations
+from flowmaticdb.orm._mapper import ModelMapper, model_mapper
 from flowmaticdb.orm._meta import ModelMeta, model_meta
 from flowmaticdb.orm._model import Model
 from flowmaticdb.orm._relation import (
@@ -31,6 +32,7 @@ __all__ = [
     "ManyToMany",
     "Model",
     "ModelColumn",
+    "ModelMapper",
     "ModelMeta",
     "ModelRelation",
     "PrimaryKey",
@@ -45,5 +47,6 @@ __all__ = [
     "has_one",
     "load_relations",
     "many_to_many",
+    "model_mapper",
     "model_meta",
 ]

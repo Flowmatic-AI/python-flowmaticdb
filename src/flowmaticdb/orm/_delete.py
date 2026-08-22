@@ -5,6 +5,7 @@ from typing import TYPE_CHECKING, Any, Generic, Self, TypeVar
 
 from flowmaticdb import ModelError
 from flowmaticdb.orm._loader import load_relations, owner_keys
+from flowmaticdb.orm._mapper import model_mapper
 from flowmaticdb.orm._meta import model_meta
 from flowmaticdb.orm._tree import RelationTree
 from flowmaticdb.orm.enums import RelationEnum
@@ -144,11 +145,12 @@ def _load_by_column(
     keys: list[Any],
     emulate_prepare: bool,
 ) -> list[Model]:
-    meta = model_meta(model)
+    mapper = model_mapper(model)
+    meta = mapper.meta
     query = database.select(meta.table).columns(meta.column_identifiers())
     query.where_in([meta.table, column_name], keys)
 
-    return [model.from_row(row) for row in query.execute(emulate_prepare).fetch_dicts()]
+    return mapper.to_models(query.execute(emulate_prepare).fetch_dicts())
 
 
 def _delete_owners(
@@ -157,7 +159,8 @@ def _delete_owners(
     models: Sequence[Model],
     emulate_prepare: bool,
 ) -> None:
-    meta = model_meta(model)
+    mapper = model_mapper(model)
+    meta = mapper.meta
     primary_keys = meta.primary_keys
 
     if len(primary_keys) == 1:
@@ -165,7 +168,7 @@ def _delete_owners(
         keys: list[Any] = []
 
         for owner in models:
-            value = owner.column_value(primary_key)
+            value = mapper.column_value(owner, primary_key)
 
             if value is None:
                 raise ModelError(
@@ -182,7 +185,7 @@ def _delete_owners(
         query = database.delete(meta.table)
 
         for primary_key in primary_keys:
-            value = owner.column_value(primary_key)
+            value = mapper.column_value(owner, primary_key)
 
             if value is None:
                 raise ModelError(
@@ -209,7 +212,7 @@ def _related_models(owners: Sequence[Model], relation: ModelRelation) -> list[Mo
     seen: set[int] = set()
 
     for owner in owners:
-        for child in owner.related_models(relation):
+        for child in model_mapper(type(owner)).related_models(owner, relation):
             if id(child) in seen:
                 continue
 

@@ -4,6 +4,7 @@ from collections.abc import Sequence
 from typing import TYPE_CHECKING, Any, Generic, Self, TypeVar
 
 from flowmaticdb import ModelError
+from flowmaticdb.orm._mapper import model_mapper
 from flowmaticdb.orm._meta import model_meta
 from flowmaticdb.orm._relation import ModelRelation
 from flowmaticdb.orm._tree import RelationNode, RelationTree
@@ -66,11 +67,12 @@ class UpdateModelQuery(Generic[ModelT]):
 
 
 def _update_model(database: DatabaseABC, model: Model, columns: list[ModelColumn], emulate_prepare: bool) -> None:
-    meta = model_meta(type(model))
+    mapper = model_mapper(type(model))
+    meta = mapper.meta
     primary_key_values: list[tuple[str, Any]] = []
 
     for primary_key in meta.primary_keys:
-        value = model.column_value(primary_key)
+        value = mapper.column_value(model, primary_key)
 
         if value is None:
             raise ModelError(
@@ -81,7 +83,7 @@ def _update_model(database: DatabaseABC, model: Model, columns: list[ModelColumn
         primary_key_values.append((primary_key.column_name, value))
 
     updates = {
-        column.column_name: model.column_value(column)
+        column.column_name: mapper.column_value(model, column)
         for column in columns
         if not column.primary_key
     }
@@ -117,7 +119,7 @@ def _related(parents: Sequence[Model], relation: ModelRelation) -> list[Model]:
     seen: set[int] = set()
 
     for parent in parents:
-        for child in parent.related_models(relation):
+        for child in model_mapper(type(parent)).related_models(parent, relation):
             if id(child) in seen:
                 continue
 

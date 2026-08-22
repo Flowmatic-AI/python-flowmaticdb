@@ -20,6 +20,7 @@ from flowmaticdb.orm import (
     has_many,
     has_one,
     many_to_many,
+    model_mapper,
     model_meta,
 )
 
@@ -268,11 +269,86 @@ def test_column_identifiers() -> None:
     assert identifiers == {"id": ["widgets", "id"], "widget_label": ["widgets", "widget_label"]}
 
 
-def test_from_row_maps_known_columns_and_ignores_unmapped_keys() -> None:
-    widget = Widget.from_row({"id": 1, "widget_label": "Left", "extra_column": "ignored"})
+def test_to_model_maps_known_columns_and_ignores_unmapped_keys() -> None:
+    widget = model_mapper(Widget).to_model({"id": 1, "widget_label": "Left", "extra_column": "ignored"})
 
     assert widget.id == 1
     assert widget.label == "Left"
+
+
+def test_to_models_maps_every_row() -> None:
+    widgets = model_mapper(Widget).to_models([{"id": 1, "widget_label": "Left"}, {"id": 2, "widget_label": "Right"}])
+
+    assert [(widget.id, widget.label) for widget in widgets] == [(1, "Left"), (2, "Right")]
+
+
+def test_to_row_keys_the_values_by_column_name() -> None:
+    assert model_mapper(Widget).to_row(Widget(id=1, label="Left")) == {"id": 1, "widget_label": "Left"}
+
+
+def test_the_mapper_of_a_model_class_is_shared() -> None:
+    mapper = model_mapper(Widget)
+
+    assert model_mapper(Widget) is mapper
+    assert mapper.model is Widget
+    assert mapper.meta is model_meta(Widget)
+
+
+def test_column_value_reads_and_set_column_value_writes_a_field() -> None:
+    mapper = model_mapper(Widget)
+    widget = Widget(label="Left")
+    label = mapper.meta.column_by_name("widget_label")
+
+    assert mapper.column_value(widget, label) == "Left"
+
+    mapper.set_column_value(widget, label, "Right")
+
+    assert widget.label == "Right"
+    assert "label" in widget.model_fields_set
+
+
+def test_key_value_and_primary_key_value_read_a_field_by_column_name() -> None:
+    mapper = model_mapper(Widget)
+    widget = Widget(id=7, label="Left")
+
+    assert mapper.key_value(widget, "widget_label") == "Left"
+    assert mapper.primary_key_value(widget) == 7
+
+    with pytest.raises(ModelError):
+        mapper.key_value(widget, "no_such_column")
+
+
+def test_related_models_normalizes_a_relation_field_to_a_list() -> None:
+    mapper = model_mapper(Author)
+    author = Author(name="Ann")
+    profile = model_meta(Author).relation("profile")
+    books = model_meta(Author).relation("books")
+
+    assert mapper.related_models(author, profile) == []
+    assert mapper.related_models(author, books) == []
+
+    bio = AuthorProfile(author_id=1, bio="Writes")
+    book = Book(author_id=1, title="First")
+
+    mapper.set_relation(author, profile, bio)
+    mapper.set_relation(author, books, [book])
+
+    assert mapper.related_models(author, profile) == [bio]
+    assert mapper.related_models(author, books) == [book]
+
+
+def test_is_relation_loaded_reports_which_relations_were_set() -> None:
+    mapper = model_mapper(Author)
+    author = mapper.to_model({"id": 1, "name": "Ann"})
+
+    assert mapper.is_relation_loaded(author, "books") is False
+
+    mapper.set_relation(author, model_meta(Author).relation("books"), [])
+
+    assert mapper.is_relation_loaded(author, "books") is True
+
+    with pytest.raises(ModelError):
+        mapper.is_relation_loaded(author, "no_such_relation")
 
 
 def test_relation_tree_add_simple_path() -> None:
@@ -350,7 +426,7 @@ def test_describe_table_reads_the_table_description_off_the_database() -> None:
     db = DB.connect_sqlite(":memory:")
     db.create_table("widgets").identity("id").string("widget_label").execute()
 
-    description = Widget.describe_table(db)
+    description = model_mapper(Widget).describe_table(db)
 
     assert [column.name for column in description.columns] == ["id", "widget_label"]
     assert description == db.describe_table("widgets")
