@@ -32,6 +32,7 @@ class AuthorProfile(Model):
     id: AutoIncrement = None
     author_id: int
     bio: str
+    nickname: str | None = None
 
 
 class Post(Model):
@@ -58,6 +59,13 @@ class CommentFlag(Model):
     reason: str
 
 
+class Defaulted(Model):
+    __table__ = "defaulted"
+    id: AutoIncrement = None
+    name: str
+    nickname: str | None = None
+
+
 class Tag(Model):
     __table__ = "tags"
     id: AutoIncrement = None
@@ -67,14 +75,36 @@ class Tag(Model):
 
 def _build_database() -> DB:
     db = DB.connect_sqlite(":memory:")
+    _create_tables(db)
+    return db
+
+
+def _build_recording_database() -> tuple[DB, list[str]]:
+    """A database that records every statement it runs, so a RETURNING clause can be asserted."""
+    statements: list[str] = []
+    db = DB.connect_sqlite(":memory:", debug_callback=lambda sql, duration, error: statements.append(sql))
+    _create_tables(db)
+    statements.clear()
+
+    return db, statements
+
+
+def _create_tables(db: DB) -> None:
     db.create_table("authors").identity("id").string("name").execute()
-    db.create_table("author_profiles").identity("id").integer("author_id").string("bio").execute()
+    (
+        db.create_table("author_profiles")
+        .identity("id")
+        .integer("author_id")
+        .string("bio")
+        .string("nickname", default="anon")
+        .execute()
+    )
     db.create_table("posts").identity("id").integer("author_id").string("title").execute()
     db.create_table("comments").identity("id").integer("post_id").string("body").execute()
     db.create_table("comment_flags").identity("id").integer("comment_id").string("reason").execute()
     db.create_table("tags").identity("id").string("slug").execute()
     db.create_table("author_tags").integer("author_id").integer("tag_id").execute()
-    return db
+    db.create_table("defaulted").identity("id").string("name").string("nickname", default="anon").execute()
 
 
 def test_insert_model_fills_auto_increment_primary_key() -> None:
@@ -102,27 +132,17 @@ def test_insert_models_fills_auto_increment_for_each_model() -> None:
     assert len(ids) == 2
 
 
-def test_insert_model_with_explicit_primary_key_value_is_inserted_as_is() -> None:
-    db = _build_database()
+def test_auto_increment_column_is_never_inserted_and_its_value_is_replaced() -> None:
+    db, statements = _build_recording_database()
     author = Author(id=99, name="Zoe")
 
     db.insert_model(author).execute()
 
-    assert author.id == 99
-    row = db.select("authors").where_equals("id", 99).execute().fetch_dict()
+    assert statements == ['INSERT INTO "authors" ("name") VALUES (\'Zoe\') RETURNING "id"']
+    assert author.id == 1
+    row = db.select("authors").where_equals("id", 1).execute().fetch_dict()
     assert row is not None
     assert row["name"] == "Zoe"
-
-
-def test_fill_primary_keys_disabled_leaves_ids_unset() -> None:
-    db = _build_database()
-    authors = [Author(name="Alice"), Author(name="Bob")]
-
-    db.insert_models(authors).fill_primary_keys(False).execute()
-
-    assert [author.id for author in authors] == [None, None]
-    rows = db.select("authors").execute().fetch_dicts()
-    assert len(rows) == 2
 
 
 def test_insert_model_cascades_belongs_to_and_sets_foreign_key() -> None:
@@ -190,6 +210,107 @@ def test_insert_models_empty_list_is_noop_and_relation_does_not_raise() -> None:
     result = db.insert_models(authors).relation("posts").execute()
 
     assert result == []
+
+
+
+def test_insert_model_returns_the_auto_increment_key_by_default() -> None:
+    db, statements = _build_recording_database()
+
+    db.insert_model(Author(name="Alice")).execute()
+
+    assert statements == ['INSERT INTO "authors" ("name") VALUES (\'Alice\') RETURNING "id"']
+
+
+def test_insert_model_returning_adds_the_auto_increment_key_to_the_named_columns() -> None:
+    db, statements = _build_recording_database()
+    author = Author(name="Alice")
+
+    db.insert_model(author).returning(["name"]).execute()
+
+    assert statements == ['INSERT INTO "authors" ("name") VALUES (\'Alice\') RETURNING "id", "name"']
+    assert author.id is not None
+
+
+def test_insert_model_returning_does_not_repeat_the_auto_increment_key() -> None:
+    db, statements = _build_recording_database()
+
+    db.insert_model(Author(name="Alice")).returning(["name", "id"]).execute()
+
+    assert statements == ['INSERT INTO "authors" ("name") VALUES (\'Alice\') RETURNING "id", "name"']
+
+
+def test_insert_model_returning_without_columns_reads_every_column() -> None:
+    db, statements = _build_recording_database()
+    author = Author(name="Alice")
+
+    db.insert_model(author).returning().execute()
+
+    assert statements == ['INSERT INTO "authors" ("name") VALUES (\'Alice\') RETURNING *']
+    assert author.id is not None
+
+
+def test_insert_model_returning_applies_to_the_root_models_only() -> None:
+    db, statements = _build_recording_database()
+    post = Post(title="Guide", author=Author(name="Bob"))
+
+    db.insert_model(post).relation("author").returning(["title"]).execute()
+
+    assert statements == [
+        'INSERT INTO "authors" ("name") VALUES (\'Bob\') RETURNING "id"',
+        'INSERT INTO "posts" ("author_id", "title") VALUES (1, \'Guide\') RETURNING "id", "title"',
+    ]
+
+
+def test_insert_models_returning_reads_every_row_back_onto_its_own_model() -> None:
+    db, statements = _build_recording_database()
+    authors = [Author(name="Alice"), Author(name="Bob")]
+
+    db.insert_models(authors).returning(["name"]).execute()
+
+    assert statements == [
+        'INSERT INTO "authors" ("name") VALUES (\'Alice\') RETURNING "id", "name"',
+        'INSERT INTO "authors" ("name") VALUES (\'Bob\') RETURNING "id", "name"',
+    ]
+    assert [author.name for author in authors] == ["Alice", "Bob"]
+    assert None not in [author.id for author in authors]
+
+
+def test_none_columns_are_inserted_as_null_by_default() -> None:
+    db, statements = _build_recording_database()
+    model = Defaulted(name="Zoe")
+
+    db.insert_model(model).returning().execute()
+
+    assert statements == ['INSERT INTO "defaulted" ("name", "nickname") VALUES (\'Zoe\', NULL) RETURNING *']
+    assert model.nickname is None
+
+
+def test_omit_null_values_leaves_none_columns_out_of_the_insert() -> None:
+    db, statements = _build_recording_database()
+    model = Defaulted(name="Zoe")
+
+    db.insert_model(model).omit_null_values().returning().execute()
+
+    assert statements == ['INSERT INTO "defaulted" ("name") VALUES (\'Zoe\') RETURNING *']
+    assert model.nickname == "anon"
+
+
+def test_omit_null_values_applies_to_cascaded_relations_too() -> None:
+    db = _build_database()
+    author = Author(name="Alice", profile=AuthorProfile(author_id=0, bio="Writes"))
+
+    db.insert_model(author).relation("profile").omit_null_values().execute()
+
+    row = db.select("author_profiles").execute().fetch_dict()
+    assert row is not None
+    assert row["nickname"] == "anon"
+
+
+def test_insert_model_returning_unknown_column_name_raises_model_error() -> None:
+    db = _build_database()
+
+    with pytest.raises(ModelError):
+        db.insert_model(Author(name="Alice")).returning(["nope"]).execute()
 
 
 def test_insert_models_requires_same_class() -> None:

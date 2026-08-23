@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import sys
+from datetime import datetime
 from typing import Annotated
 
 from pydantic import ValidationError
@@ -85,6 +87,8 @@ class User(Model):
     name: str
     email: Annotated[str, column(column_name="email_address")]
     country_code: str | None = None
+    created_at: datetime | None = None
+    updated_at: datetime | None = None
 
     country: BelongsTo[Country] = belongs_to()
     profile: HasOne[Profile] = has_one()
@@ -108,6 +112,8 @@ def create_schema(db: DB) -> None:
         .string("name", not_null=True)
         .string("email_address")
         .string("country_code")
+        .current_timestamp("created_at", not_null=True)
+        .current_timestamp("updated_at", not_null=True)
         .execute()
     )
 
@@ -155,6 +161,25 @@ def create_schema(db: DB) -> None:
     )
 
 
+TABLES = ["post_tags", "comments", "posts", "profiles", "users", "tags", "countries"]
+
+
+def connect(engine: str) -> DB:
+    """python orm.py [sqlite|postgres|mysql]"""
+    if engine == "postgres":
+        return DB.connect_postgresql("postgres", host="localhost", user="postgres", debug_callback=debug_callback)
+
+    if engine == "mysql":
+        return DB.connect_mysql("flowmaticdb", host="localhost", user="root", password="", debug_callback=debug_callback)
+
+    return DB.connect_sqlite(":memory:", debug_callback=debug_callback)
+
+
+def drop_schema(db: DB) -> None:
+    for table in TABLES:
+        db.drop_table(table).if_exists().execute()
+
+
 def heading(title: str) -> None:
     print("\n" + "=" * 70)
     print(title)
@@ -167,10 +192,12 @@ def table_counts(db: DB) -> str:
     return " ".join(f"{table}={db.select(table).count()}" for table in tables)
 
 
-db = DB.connect_sqlite(":memory:", debug_callback=debug_callback)
-# db = DB.connect_postgresql("postgres", host="localhost", user="postgres", debug_callback=debug_callback)
-# db = DB.connect_mysql("flowmaticdb", host="localhost", user="root", password="", debug_callback=debug_callback)
+engine = sys.argv[1] if len(sys.argv) > 1 else "sqlite"
+db = connect(engine)
 
+print(f"engine: {engine} — native RETURNING: {db.dialect.returning}")
+
+drop_schema(db)
 create_schema(db)
 
 heading("Model metadata")
@@ -238,6 +265,8 @@ alice = User(
     .relation("profile")
     .relation("posts.comments")
     .relation("posts.tags")
+    .omit_null_values()
+    .returning()
     .execute()
 )
 
@@ -248,6 +277,7 @@ join_rows = (
 )
 
 print(f"alice.id             {alice.id}")
+print(f"alice timestamps     {alice.created_at} / {alice.updated_at} (filled by the database)")
 print(f"profile.user_id      {alice.profile.user_id if alice.profile else None}")
 print(f"post ids             {[p.id for p in alice.posts]}")
 print(f"post.user_id         {[p.user_id for p in alice.posts]}")
@@ -265,6 +295,8 @@ bob = User(
 (
     db.insert_model(bob)
     .relation("posts")
+    .omit_null_values()
+    .returning()
     .execute()
 )
 
@@ -435,6 +467,49 @@ assert target is not None
 
 print(f"after                {table_counts(db)}")
 print("many to many removed the join rows and left the tags table alone")
+
+heading("INSERT with returning")
+
+crew = [
+    User(name="Dana", email="dana@example.com", country_code="nl"),
+    User(name="Erik", email="erik@example.com", country_code="be"),
+    User(name="Fiona", email="fiona@example.com", country_code="nl"),
+]
+
+show_sql = True
+(
+    db.insert_models(crew)
+    .omit_null_values()
+    .returning()
+    .execute()
+)
+show_sql = False
+
+print()
+for member in crew:
+    print(f"{member.id:<3} {member.name:<6} {member.email:<20} {member.created_at} / {member.updated_at}")
+
+stamped = [member for member in crew if member.created_at is not None]
+
+print(
+    f"\nread back            {len(stamped)}/{len(crew)} models got the database-filled timestamps, "
+    f"{len({member.created_at for member in stamped})} of them distinct"
+)
+print("names came back too  " + ", ".join(f"{member.id}={member.name}" for member in crew))
+
+stored = (
+    db.select("users")
+    .columns(["id", "name", "created_at"])
+    .order_by_asc("id")
+    .execute()
+    .fetch_dicts()
+)
+
+print(f"rows in the table    {stored}")
+print(
+    "omit_null_values() left created_at and updated_at out of the statement, so DEFAULT CURRENT_TIMESTAMP "
+    "filled them and returning() read them straight back onto the models"
+)
 
 heading("Errors")
 

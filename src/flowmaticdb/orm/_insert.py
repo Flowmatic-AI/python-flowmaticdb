@@ -28,7 +28,8 @@ class InsertModelQuery(Generic[ModelT]):
         self._dialect = dialect
         self._database = database
         self._models = models
-        self._fill_primary_keys = True
+        self._returning_names: list[str] | None = None
+        self._omit_null_values = False
 
         model_class: type[Model] | None = None
 
@@ -49,8 +50,15 @@ class InsertModelQuery(Generic[ModelT]):
 
         return self
 
-    def fill_primary_keys(self, enabled: bool = True) -> Self:
-        self._fill_primary_keys = enabled
+    def returning(self, column_names: list[str] | None = None) -> Self:
+        self._returning_names = column_names if column_names is not None else []
+
+        return self
+
+    def omit_null_values(self) -> Self:
+        """Leave every column that is None out of the insert, so the database
+        fills it with its own default instead of an explicit NULL."""
+        self._omit_null_values = True
 
         return self
 
@@ -60,11 +68,17 @@ class InsertModelQuery(Generic[ModelT]):
 
         assert self._tree is not None
 
-        self._cascade_insert(self._models, self._tree.nodes, emulate_prepare)
+        self._cascade_insert(self._models, self._tree.nodes, emulate_prepare, self._returning_names)
 
         return self._models
 
-    def _cascade_insert(self, models: Sequence[Model], nodes: dict[str, RelationNode], emulate_prepare: bool) -> None:
+    def _cascade_insert(
+        self,
+        models: Sequence[Model],
+        nodes: dict[str, RelationNode],
+        emulate_prepare: bool,
+        returning_names: list[str] | None = None,
+    ) -> None:
         if len(models) == 0:
             return
 
@@ -72,7 +86,7 @@ class InsertModelQuery(Generic[ModelT]):
             if node.relation.relation == RelationEnum.BELONGS_TO:
                 self._cascade_belongs_to(models, node, emulate_prepare)
 
-        self._insert_rows(models, emulate_prepare)
+        self._insert_rows(models, emulate_prepare, returning_names)
 
         for node in nodes.values():
             if node.relation.relation in (RelationEnum.HAS_ONE, RelationEnum.HAS_MANY):
@@ -168,26 +182,49 @@ class InsertModelQuery(Generic[ModelT]):
 
         return collected
 
-    def _insert_rows(self, models: Sequence[Model], emulate_prepare: bool) -> None:
+    def _insert_rows(self, models: Sequence[Model], emulate_prepare: bool, returning_names: list[str] | None) -> None:
         if len(models) == 0:
             return
 
         mapper = model_mapper(type(models[0]))
-        primary_key = self._resolve_auto_increment_primary_key(mapper.meta) if self._fill_primary_keys else None
+        primary_key = self._resolve_auto_increment_primary_key(mapper.meta)
+        returning = self._resolve_returning(mapper.meta, primary_key, returning_names)
 
-        if primary_key is not None:
+        if returning is not None:
             for model in models:
-                self._insert_returning(mapper, model, primary_key, emulate_prepare)
+                self._insert_returning(mapper, model, primary_key, returning, emulate_prepare)
 
             return
 
-        if self._fill_primary_keys:
-            for model in models:
-                self._insert_plain(mapper, model, emulate_prepare)
+        for model in models:
+            self._insert_plain(mapper, model, emulate_prepare)
 
-            return
+    def _resolve_returning(
+        self,
+        meta: ModelMeta,
+        primary_key: ModelColumn | None,
+        returning_names: list[str] | None,
+    ) -> list[str] | None:
+        """The columns to read back off every inserted row, or None to insert
+        without RETURNING. An auto-increment primary key is always read back."""
+        if returning_names is None:
+            if primary_key is None:
+                return None
 
-        self._insert_batch(mapper, models, emulate_prepare)
+            return [primary_key.column_name]
+
+        if len(returning_names) == 0:
+            return []
+
+        columns: list[str] = [] if primary_key is None else [primary_key.column_name]
+
+        for name in returning_names:
+            column_name = meta.column_by_name(name).column_name
+
+            if column_name not in columns:
+                columns.append(column_name)
+
+        return columns
 
     def _resolve_auto_increment_primary_key(self, meta: ModelMeta) -> ModelColumn | None:
         try:
@@ -201,10 +238,13 @@ class InsertModelQuery(Generic[ModelT]):
         return primary_keys[0]
 
     def _insert_values(self, mapper: ModelMapper[Model], model: Model) -> dict[str, Any]:
+        """An auto-increment column is never inserted: the database owns its
+        value, and leaving it out of the statement is what keeps the last insert
+        id -- and with it the emulated RETURNING -- pointing at this row."""
         values = mapper.to_row(model)
 
         for column in mapper.meta.columns:
-            if column.auto_increment and values[column.column_name] is None:
+            if column.auto_increment or (self._omit_null_values and values[column.column_name] is None):
                 del values[column.column_name]
 
         return values
@@ -213,17 +253,17 @@ class InsertModelQuery(Generic[ModelT]):
         self,
         mapper: ModelMapper[Model],
         model: Model,
-        primary_key: ModelColumn,
+        primary_key: ModelColumn | None,
+        returning: list[str],
         emulate_prepare: bool,
     ) -> None:
         meta = mapper.meta
-        result = (
-            self._database.insert(meta.table)
-            .values(self._insert_values(mapper, model))
-            .returning([])
-            .last_insert_id(primary_key.column_name)
-            .execute(emulate_prepare)
-        )
+        insert_query = self._database.insert(meta.table).values(self._insert_values(mapper, model)).returning(returning)
+
+        if primary_key is not None:
+            insert_query.last_insert_id(primary_key.column_name)
+
+        result = insert_query.execute(emulate_prepare)
 
         row = self._single_result(result).fetch_dict()
 
@@ -239,16 +279,6 @@ class InsertModelQuery(Generic[ModelT]):
     def _insert_plain(self, mapper: ModelMapper[Model], model: Model, emulate_prepare: bool) -> None:
         table = mapper.meta.table
         self._database.insert(table).values(self._insert_values(mapper, model)).execute(emulate_prepare)
-
-    def _insert_batch(self, mapper: ModelMapper[Model], models: Sequence[Model], emulate_prepare: bool) -> None:
-        batches: dict[frozenset[str], list[dict[str, Any]]] = {}
-
-        for model in models:
-            values = self._insert_values(mapper, model)
-            batches.setdefault(frozenset(values), []).append(values)
-
-        for batch in batches.values():
-            self._database.insert(mapper.meta.table).values(*batch).execute(emulate_prepare)
 
     def _single_result(self, result: ResultABC | list[ResultABC]) -> ResultABC:
         if isinstance(result, list):

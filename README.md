@@ -1183,8 +1183,8 @@ alice = User(name="Alice")
 alice.posts = [Post(title="First"), Post(title="Second")]
 
 db.insert_models([alice]).relation("posts").execute()
-# INSERT INTO "users" (...) VALUES (...)          — alice.id is read back onto the model
-# INSERT INTO "posts" (...) VALUES (...), (...)   — each post's user_id is set to alice.id first
+# INSERT INTO "users" (...) VALUES (...)   — alice.id is read back onto the model
+# INSERT INTO "posts" (...) VALUES (...)   — one per post, each user_id set to alice.id first
 ```
 
 Relations cascade in the order that keeps every foreign key satisfiable:
@@ -1200,16 +1200,57 @@ Relations cascade in the order that keeps every foreign key satisfiable:
 Relations only cascade for the paths passed to `relation()`, over whatever models are
 actually sitting on that field — an empty or unset relation is simply skipped.
 
-By default (`fill_primary_keys(True)`, the default), every model in the whole call —
-roots and every cascaded relation alike — is inserted one at a time, and when its meta
-has a single auto-increment primary key, the returned row is written straight back onto
-it. Turn it off to batch same-shaped models into one `.values(...)` call per level
-instead, at the cost of no primary key read-back:
+Every model in the whole call — roots and every cascaded relation alike — is inserted
+one at a time, and when its meta has a single auto-increment primary key that column is
+in the statement's `RETURNING` list and the returned value is written straight back onto
+the model. There is no way to turn that read-back off: a model always comes back out of
+`insert_models()` with its key filled in.
+
+An auto-increment column is **never** part of the insert, even when the model carries a
+value for it — the database owns that column, and a value already sitting on the field is
+overwritten by the one it hands back:
 
 ```python
-db.insert_models([User(name="Alice"), User(name="Bob")]).fill_primary_keys(False).execute()
-# INSERT INTO "users" (...) VALUES (...), (...)   — one statement, ids not read back
+user = User(id=99, name="Alice")
+db.insert_model(user).execute()
+# INSERT INTO "users" ("name") VALUES ('Alice') RETURNING "id"   — no "id" column, and user.id is now 1
 ```
+
+Leaving it out is also what keeps the last insert id pointing at the row that was just
+written, which is what a dialect without native `RETURNING` needs to read that row back.
+To insert a chosen key, declare the column as `PrimaryKey[...]` instead of
+`AutoIncrement`.
+
+`returning([...])` reads more columns back off the inserted row — every column named
+there is written onto the model too, on top of the auto-increment primary key, which is
+**always** in the `RETURNING` list. `returning()` with no columns reads all of them:
+
+```python
+db.insert_model(User(name="Alice")).returning(["created_at"]).execute()
+# INSERT INTO "users" (...) VALUES (...) RETURNING "id", "created_at"
+
+db.insert_model(User(name="Alice")).returning().execute()
+# INSERT INTO "users" (...) VALUES (...) RETURNING *
+```
+
+The column names are the model's own columns — an unknown one raises `ModelError` — and
+they apply to the models passed to that call only, never to a cascaded relation, which
+reads back its own auto-increment key as usual.
+
+By default every other column is written, `None` included, so a `None` field becomes an
+explicit `NULL` and a `DEFAULT` on that column never fires. `omit_null_values()` leaves
+those columns out of the statement instead, which lets the database fill them — and
+combined with `returning()` the filled values come straight back:
+
+```python
+db.insert_model(User(name="Alice")).omit_null_values().returning().execute()
+# INSERT INTO "users" ("name") VALUES ('Alice') RETURNING *
+# created_at and updated_at are filled by DEFAULT CURRENT_TIMESTAMP and read back onto the model
+```
+
+Unlike `returning()`, it applies to every model in the call, cascaded relations included.
+A column that is genuinely meant to be `NULL` has to be left out of the flag's reach —
+the flag cannot tell "not set" from "set to None".
 
 `insert_model(alice)` is `insert_models([alice])`. Every model passed to one call has to
 be the same class, and an empty list is a no-op.
