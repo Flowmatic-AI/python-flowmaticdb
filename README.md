@@ -684,7 +684,7 @@ Every condition method has four variants:
 .where_contains("bio", "engineer")       # LIKE '%engineer%'
 .where_not_contains("bio", "spam")       # NOT LIKE '%spam%'
 
-# File globbing (SQLite)
+# File globbing (native on SQLite, emulated via LIKE elsewhere)
 .where_glob("path", "*.txt")
 .where_not_glob("path", "*.tmp")
 
@@ -1962,7 +1962,7 @@ Reading is unaffected — an array column always comes back as a plain `list`.
 - `LIMIT` / `OFFSET` — Standard ANSI syntax
 - `LIMIT ? OFFSET ?` — Parameterized
 - No native `ON CONFLICT`, `RETURNING`, `DISTINCT ON`, or `LATERAL` — INSERT emulates the first two
-- No `GLOB` support
+- `GLOB` / `NOT GLOB` — emulated by translating the glob pattern to a `LIKE` pattern
 - Regex raises `QueryError`
 
 ---
