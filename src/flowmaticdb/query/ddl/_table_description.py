@@ -1,10 +1,15 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from typing import TYPE_CHECKING
 
 from flowmaticdb.query.ddl._column import Column
 from flowmaticdb.query.ddl._foreign_key_constraint import ForeignKeyConstraint
 from flowmaticdb.query.ddl._unique_constraint import UniqueConstraint
+
+if TYPE_CHECKING:
+    from flowmaticdb.database import DatabaseABC
+    from flowmaticdb.result import ResultABC
 
 
 @dataclass
@@ -15,5 +20,50 @@ class TableConstraints:
 
 @dataclass
 class TableDescription:
+    table: str | list[str] = ""
     columns: list[Column] = field(default_factory=list)
+    primary_keys: list[str] = field(default_factory=list)
     constraints: TableConstraints = field(default_factory=TableConstraints)
+
+    def create_table(
+        self,
+        db: DatabaseABC,
+        if_not_exists: bool = False,
+        skip_unique_constraints: bool = False,
+        skip_foreign_key_constraints: bool = False,
+    ) -> ResultABC:
+        """Recreate the described table on ``db`` and run the statement."""
+        query = db.create_table(self.table)
+
+        if if_not_exists:
+            query.if_not_exists()
+
+        for column in self.columns:
+            query.column(
+                name=column.name,
+                type_=column.type,
+                not_null=column.not_null,
+                default=column.default,
+                generated_by_default_as_identity=column.auto_increment,
+                size=column.size,
+            )
+
+        if self.primary_keys:
+            query.primary_keys(list(self.primary_keys))
+
+        if not skip_unique_constraints:
+            for unique in self.constraints.unique:
+                query.unique_constraint(list(unique.columns), unique.name)
+
+        if not skip_foreign_key_constraints:
+            for foreign_key in self.constraints.foreign_keys:
+                query.foreign_key_constraint(
+                    column=list(foreign_key.columns),
+                    ref_table=foreign_key.ref_table,
+                    ref_column=list(foreign_key.ref_columns),
+                    name=foreign_key.name,
+                    on_delete=foreign_key.on_delete,
+                    on_update=foreign_key.on_update,
+                )
+
+        return query.execute()

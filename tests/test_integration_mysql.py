@@ -1319,6 +1319,64 @@ def test_mysql_create_and_drop_index(
     assert "idx_intro_users_name" not in indexes
 
 
+def test_mysql_describe_table_primary_keys(
+    mysql_adapter: MySQLAdapter, mysql_dialect: MySQLDialect
+) -> None:
+    """MySQL names every primary key PRIMARY, so the key comes back by its columns."""
+    db = DB(mysql_adapter, mysql_dialect)
+    _introspection_schema(db)
+    db.exec("DROP TABLE IF EXISTS `intro_memberships`")
+    db.create_table("intro_memberships") \
+        .integer("user_id") \
+        .integer("role_id") \
+        .primary_keys(["user_id", "role_id"]) \
+        .execute()
+
+    try:
+        assert db.describe_table("intro_users").primary_keys == ["id"]
+        assert db.describe_table("intro_memberships").primary_keys == ["user_id", "role_id"]
+        assert db.describe_table("no_such_table").primary_keys == []
+
+        # The PRIMARY rows must not have leaked into the other constraint lists.
+        description = db.describe_table("intro_memberships")
+        assert description.constraints.unique == []
+        assert description.constraints.foreign_keys == []
+    finally:
+        db.exec("DROP TABLE IF EXISTS `intro_memberships`")
+        db.exec("DROP TABLE IF EXISTS `intro_users`")
+        db.exec("DROP TABLE IF EXISTS `intro_roles`")
+
+
+def test_mysql_create_table_from_a_description(
+    mysql_adapter: MySQLAdapter, mysql_dialect: MySQLDialect
+) -> None:
+    """A description rebuilds its table in another database, constraints and all."""
+    db = DB(mysql_adapter, mysql_dialect)
+    _introspection_schema(db)
+    db.exec("DROP DATABASE IF EXISTS flowmaticdb_copy")
+    db.exec("CREATE DATABASE flowmaticdb_copy")
+
+    try:
+        for table in ["intro_roles", "intro_users"]:
+            description = db.describe_table(table)
+            description.table = ["flowmaticdb_copy", table]
+            assert isinstance(description.create_table(db), ResultABC)
+
+        original = db.describe_table("intro_users")
+        copy = db.describe_table(["flowmaticdb_copy", "intro_users"])
+
+        assert copy.columns == original.columns
+        assert copy.primary_keys == original.primary_keys == ["id"]
+        assert copy.constraints.unique == original.constraints.unique
+        assert copy.constraints.foreign_keys == original.constraints.foreign_keys
+
+        db.describe_table(["flowmaticdb_copy", "intro_users"]).create_table(db, if_not_exists=True)
+    finally:
+        db.exec("DROP DATABASE IF EXISTS flowmaticdb_copy")
+        db.exec("DROP TABLE IF EXISTS `intro_users`")
+        db.exec("DROP TABLE IF EXISTS `intro_roles`")
+
+
 def test_mysql_index_and_describe_with_a_qualified_table(
     mysql_adapter: MySQLAdapter, mysql_dialect: MySQLDialect
 ) -> None:

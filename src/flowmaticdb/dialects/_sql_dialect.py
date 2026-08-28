@@ -938,7 +938,7 @@ class SQLDialect(DialectABC):
             " AND rkcu.constraint_name = rc.unique_constraint_name"
             " AND rkcu.ordinal_position = kcu.position_in_unique_constraint"
             f" WHERE tc.table_name = ?{schema_filter}"
-            " AND tc.constraint_type IN ('UNIQUE', 'FOREIGN KEY')"
+            " AND tc.constraint_type IN ('PRIMARY KEY', 'UNIQUE', 'FOREIGN KEY')"
             " ORDER BY tc.constraint_name, kcu.ordinal_position"
         )
 

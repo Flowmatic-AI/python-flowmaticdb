@@ -1332,6 +1332,129 @@ def test_postgres_describe_table(pg_db: DB) -> None:
     pg_db.exec('DROP TABLE IF EXISTS "intro_roles" CASCADE')
 
 
+def test_postgres_describe_table_primary_keys(pg_db: DB) -> None:
+    """A serial key, a plain key and a composite key all read back in key order."""
+    _introspection_schema(pg_db)
+    pg_db.exec('DROP TABLE IF EXISTS "intro_memberships" CASCADE')
+    pg_db.create_table("intro_memberships") \
+        .integer("user_id") \
+        .integer("role_id") \
+        .primary_keys(["user_id", "role_id"]) \
+        .execute()
+
+    try:
+        assert pg_db.describe_table("intro_users").primary_keys == ["id"]
+        assert pg_db.describe_table("intro_memberships").primary_keys == ["user_id", "role_id"]
+        assert pg_db.describe_table("no_such_table").primary_keys == []
+    finally:
+        pg_db.exec('DROP TABLE IF EXISTS "intro_memberships" CASCADE')
+        pg_db.exec('DROP TABLE IF EXISTS "intro_users" CASCADE')
+        pg_db.exec('DROP TABLE IF EXISTS "intro_roles" CASCADE')
+
+
+def test_postgres_create_table_from_a_description(pg_db: DB) -> None:
+    """A description rebuilds its table in another schema, constraints and all."""
+    _introspection_schema(pg_db)
+    pg_db.exec("DROP SCHEMA IF EXISTS reporting CASCADE")
+    pg_db.exec("CREATE SCHEMA reporting")
+
+    try:
+        for table in ["intro_roles", "intro_users"]:
+            description = pg_db.describe_table(table)
+            description.table = ["reporting", table]
+            assert isinstance(description.create_table(pg_db), ResultABC)
+
+        original = pg_db.describe_table("intro_users")
+        copy = pg_db.describe_table(["reporting", "intro_users"])
+
+        assert copy.columns == original.columns
+        assert copy.primary_keys == original.primary_keys == ["id"]
+        assert copy.constraints.unique == original.constraints.unique
+        assert copy.constraints.foreign_keys == original.constraints.foreign_keys
+
+        # Rebuilding an existing table is a no-op only behind the guard.
+        pg_db.describe_table(["reporting", "intro_users"]).create_table(pg_db, if_not_exists=True)
+    finally:
+        pg_db.exec("DROP SCHEMA IF EXISTS reporting CASCADE")
+        pg_db.exec('DROP TABLE IF EXISTS "intro_users" CASCADE')
+        pg_db.exec('DROP TABLE IF EXISTS "intro_roles" CASCADE')
+
+
+def test_postgres_create_table_from_a_description_skipping_constraints(pg_db: DB) -> None:
+    """The two flags leave the constraints out; columns and the key stay."""
+    _introspection_schema(pg_db)
+    pg_db.exec("DROP SCHEMA IF EXISTS reporting CASCADE")
+    pg_db.exec("CREATE SCHEMA reporting")
+
+    try:
+        description = pg_db.describe_table("intro_users")
+        description.table = ["reporting", "intro_users"]
+        description.create_table(pg_db, skip_unique_constraints=True, skip_foreign_key_constraints=True)
+
+        copy = pg_db.describe_table(["reporting", "intro_users"])
+        assert copy.constraints.unique == []
+        assert copy.constraints.foreign_keys == []
+        assert copy.primary_keys == ["id"]
+        assert copy.columns == pg_db.describe_table("intro_users").columns
+    finally:
+        pg_db.exec("DROP SCHEMA IF EXISTS reporting CASCADE")
+        pg_db.exec('DROP TABLE IF EXISTS "intro_users" CASCADE')
+        pg_db.exec('DROP TABLE IF EXISTS "intro_roles" CASCADE')
+
+
+def test_postgres_bulk_copy_defers_the_foreign_keys(pg_db: DB) -> None:
+    """Copying a whole schema means building every table before any key.
+
+    A foreign key is replayed by referenced table name, so a table described
+    before the one it points at cannot carry its keys at CREATE time.
+    """
+    pg_db.exec("DROP SCHEMA IF EXISTS reporting CASCADE")
+    pg_db.exec("CREATE SCHEMA reporting")
+    pg_db.exec('DROP TABLE IF EXISTS "bulk_orders" CASCADE')
+    pg_db.exec('DROP TABLE IF EXISTS "bulk_users" CASCADE')
+
+    try:
+        pg_db.create_table("bulk_users").identity("id").string("email", 120) \
+            .unique_constraint(["email"], name="bulk_users_email_key").execute()
+        pg_db.create_table("bulk_orders").identity("id").integer("user_id") \
+            .unique_constraint(["id", "user_id"], name="bulk_orders_pair_key") \
+            .foreign_key_constraint(
+                "user_id", "bulk_users", "id",
+                name="bulk_orders_user_fk",
+                on_delete=ReferentialActionEnum.CASCADE,
+            ).execute()
+
+        # Dependency-reversed on purpose: the referencing table is built first.
+        descriptions = [pg_db.describe_table(table) for table in ["bulk_orders", "bulk_users"]]
+
+        for description in descriptions:
+            description.table = ["reporting", description.table]
+            description.create_table(pg_db, skip_foreign_key_constraints=True)
+
+        for description in descriptions:
+            for foreign_key in description.constraints.foreign_keys:
+                pg_db.alter_table(description.table) \
+                    .add_foreign_key_constraint(
+                        foreign_key.columns,
+                        foreign_key.ref_table,
+                        foreign_key.ref_columns,
+                        name=foreign_key.name,
+                        on_delete=foreign_key.on_delete,
+                        on_update=foreign_key.on_update,
+                    ) \
+                    .execute()
+
+        copy = pg_db.describe_table(["reporting", "bulk_orders"])
+        original = pg_db.describe_table("bulk_orders")
+        assert copy.constraints.foreign_keys == original.constraints.foreign_keys
+        assert copy.constraints.unique == original.constraints.unique
+        assert copy.primary_keys == original.primary_keys
+    finally:
+        pg_db.exec("DROP SCHEMA IF EXISTS reporting CASCADE")
+        pg_db.exec('DROP TABLE IF EXISTS "bulk_orders" CASCADE')
+        pg_db.exec('DROP TABLE IF EXISTS "bulk_users" CASCADE')
+
+
 def test_postgres_create_and_drop_index(pg_db: DB) -> None:
     """CREATE/DROP INDEX round-trip, including the IF (NOT) EXISTS guards."""
     _introspection_schema(pg_db)

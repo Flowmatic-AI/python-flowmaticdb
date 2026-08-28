@@ -296,6 +296,7 @@ The transaction around it stays open.""",
         return {
             "table": table,
             "columns": columns,
+            "primary_keys": description.primary_keys,
             "unique_constraints": unique,
             "foreign_keys": foreign_keys,
         }

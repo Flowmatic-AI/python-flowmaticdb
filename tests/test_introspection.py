@@ -6,6 +6,7 @@ dialect renders — the live round-trips live in the integration modules.
 """
 from __future__ import annotations
 
+import sqlite3
 import sys
 from collections.abc import Iterator
 
@@ -13,10 +14,11 @@ import pytest
 
 from flowmaticdb import QueryError
 from flowmaticdb.database import DB
-from flowmaticdb.database._introspection import parse_columns, parse_constraints
+from flowmaticdb.database._introspection import parse_columns, parse_constraints, parse_primary_keys
 from flowmaticdb.dialects import MySQLDialect, PostgresqlDialect, SQLDialect, SQLiteDialect
 from flowmaticdb.query.ddl import TableConstraints, TableDescription
 from flowmaticdb.query.enums import ReferentialActionEnum, TypeEnum
+from flowmaticdb.result import ResultABC
 
 
 @pytest.fixture
@@ -408,3 +410,195 @@ def test_parse_constraints_ignores_other_constraint_types() -> None:
 
     assert constraints.unique == []
     assert constraints.foreign_keys == []
+
+
+def test_describe_table_reports_the_table_it_described(db: DB) -> None:
+    assert db.describe_table("users").table == "users"
+    assert db.describe_table(["main", "users"]).table == ["main", "users"]
+
+
+def test_describe_table_primary_keys(db: DB) -> None:
+    """An identity column is a primary key, and describing says so."""
+    assert db.describe_table("users").primary_keys == ["id"]
+
+
+def test_describe_table_primary_key_that_is_not_an_identity(db: DB) -> None:
+    db.create_table("countries").string("code", 2, not_null=True).string("name").primary_keys("code").execute()
+
+    assert db.describe_table("countries").primary_keys == ["code"]
+
+
+def test_describe_table_composite_primary_key_keeps_the_key_order(db: DB) -> None:
+    db.create_table("memberships") \
+        .integer("user_id") \
+        .integer("role_id") \
+        .primary_keys(["user_id", "role_id"]) \
+        .execute()
+
+    assert db.describe_table("memberships").primary_keys == ["user_id", "role_id"]
+
+
+def test_describe_table_without_a_primary_key(db: DB) -> None:
+    db.create_table("events").string("kind").execute()
+
+    assert db.describe_table("events").primary_keys == []
+
+
+def test_create_table_from_a_description_round_trips(db: DB, tmp_path) -> None:
+    """A description recreates the table it came from, column for column."""
+    db.exec(f"ATTACH DATABASE '{tmp_path / 'copy.sqlite'}' AS copy")
+
+    for table in ["roles", "users"]:
+        description = db.describe_table(table)
+        description.table = ["copy", table]
+        description.create_table(db)
+
+    for table in ["roles", "users"]:
+        original = db.describe_table(table)
+        copy = db.describe_table(["copy", table])
+
+        assert [(column.name, column.type, column.size, column.not_null, column.auto_increment)
+                for column in copy.columns] == \
+               [(column.name, column.type, column.size, column.not_null, column.auto_increment)
+                for column in original.columns]
+        assert copy.primary_keys == original.primary_keys
+        assert copy.constraints == original.constraints
+
+
+def test_create_table_from_a_description_returns_a_result(db: DB) -> None:
+    description = db.describe_table("roles")
+    description.table = "roles_copy"
+
+    assert isinstance(description.create_table(db), ResultABC)
+
+
+def test_create_table_from_a_description_honours_if_not_exists(db: DB) -> None:
+    description = db.describe_table("roles")
+
+    with pytest.raises(sqlite3.OperationalError):
+        description.create_table(db)
+
+    description.create_table(db, if_not_exists=True)
+
+
+def test_create_table_from_a_description_keeps_a_composite_primary_key(db: DB) -> None:
+    db.create_table("memberships") \
+        .integer("user_id") \
+        .integer("role_id") \
+        .primary_keys(["user_id", "role_id"]) \
+        .execute()
+
+    description = db.describe_table("memberships")
+    description.table = "memberships_copy"
+    description.create_table(db)
+
+    assert db.describe_table("memberships_copy").primary_keys == ["user_id", "role_id"]
+
+
+def test_create_table_from_a_description_can_skip_the_unique_constraints(db: DB) -> None:
+    description = db.describe_table("users")
+    description.table = "users_copy"
+    description.create_table(db, skip_unique_constraints=True)
+
+    copy = db.describe_table("users_copy")
+
+    assert copy.constraints.unique == []
+    assert [key.columns for key in copy.constraints.foreign_keys] == [["role_id"]]
+    assert copy.primary_keys == ["id"]
+    # Skipping is a build-time choice, not an edit of the description.
+    assert [constraint.columns for constraint in description.constraints.unique] == [["email"], ["name", "email"]]
+
+
+def test_create_table_from_a_description_can_skip_the_foreign_keys(db: DB) -> None:
+    description = db.describe_table("users")
+    description.table = "users_copy"
+    description.create_table(db, skip_foreign_key_constraints=True)
+
+    copy = db.describe_table("users_copy")
+
+    assert copy.constraints.foreign_keys == []
+    assert [constraint.columns for constraint in copy.constraints.unique] == [["email"], ["name", "email"]]
+    assert [key.columns for key in description.constraints.foreign_keys] == [["role_id"]]
+
+
+def test_create_table_from_a_description_can_skip_both(db: DB) -> None:
+    """Columns and the primary key are not constraints the flags reach."""
+    description = db.describe_table("users")
+    description.table = "users_copy"
+    description.create_table(db, skip_unique_constraints=True, skip_foreign_key_constraints=True)
+
+    copy = db.describe_table("users_copy")
+
+    assert copy.constraints.unique == []
+    assert copy.constraints.foreign_keys == []
+    assert copy.primary_keys == ["id"]
+    assert [column.name for column in copy.columns] == [column.name for column in description.columns]
+
+
+def test_create_table_from_a_description_leaves_the_description_alone(db: DB) -> None:
+    """Building the statement must not hand the query the description's own lists."""
+    description = db.describe_table("users")
+    description.table = "users_copy"
+    description.create_table(db)
+
+    assert description.primary_keys == ["id"]
+    assert [constraint.columns for constraint in description.constraints.unique] == [["email"], ["name", "email"]]
+
+
+def test_parse_primary_keys_keeps_the_column_order() -> None:
+    primary_keys = parse_primary_keys([
+        {
+            "constraint_id": "1",
+            "constraint_name": "memberships_pkey",
+            "constraint_type": "PRIMARY KEY",
+            "column_name": "user_id",
+            "column_position": 1,
+            "ref_table": None,
+            "ref_column": None,
+            "on_delete": None,
+            "on_update": None,
+        },
+        {
+            "constraint_id": "1",
+            "constraint_name": "memberships_pkey",
+            "constraint_type": "PRIMARY KEY",
+            "column_name": "role_id",
+            "column_position": 2,
+            "ref_table": None,
+            "ref_column": None,
+            "on_delete": None,
+            "on_update": None,
+        },
+        {
+            "constraint_id": "2",
+            "constraint_name": "memberships_role_unique",
+            "constraint_type": "UNIQUE",
+            "column_name": "role_id",
+            "column_position": 1,
+            "ref_table": None,
+            "ref_column": None,
+            "on_delete": None,
+            "on_update": None,
+        },
+    ])
+
+    assert primary_keys == ["user_id", "role_id"]
+
+
+def test_dialects_ask_for_primary_key_constraints(
+    sql_dialect: SQLDialect,
+    pg_dialect: PostgresqlDialect,
+    mysql_dialect: MySQLDialect,
+    sqlite_dialect: SQLiteDialect,
+) -> None:
+    assert "'PRIMARY KEY'" in sql_dialect.describe_table_constraints("users").query
+    assert "'PRIMARY KEY'" in mysql_dialect.describe_table_constraints("users").query
+    assert "'PRIMARY KEY'" in pg_dialect.describe_table_constraints("users").query
+    assert "'PRIMARY KEY'" in sqlite_dialect.describe_table_constraints("users").query
+
+
+def test_sqlite_describe_table_constraints_binds_every_pragma(sqlite_dialect: SQLiteDialect) -> None:
+    """One name per pragma without a schema; name and schema per pragma with one."""
+    assert sqlite_dialect.describe_table_constraints("users").params == ["users", "users", "users"]
+    assert sqlite_dialect.describe_table_constraints(["app", "users"]).params == \
+        ["users", "app", "users", "app", "app", "users", "app"]

@@ -168,7 +168,8 @@ class PostgresqlDialect(SQLDialect):
             "SELECT"
             " con.oid AS constraint_id,"
             " con.conname AS constraint_name,"
-            " CASE con.contype WHEN 'u' THEN 'UNIQUE' ELSE 'FOREIGN KEY' END AS constraint_type,"
+            " CASE con.contype WHEN 'u' THEN 'UNIQUE' WHEN 'p' THEN 'PRIMARY KEY'"
+            " ELSE 'FOREIGN KEY' END AS constraint_type,"
             " att.attname AS column_name,"
             " cols.ord AS column_position,"
             " ref_cls.relname AS ref_table,"
@@ -181,7 +182,7 @@ class PostgresqlDialect(SQLDialect):
             " LEFT JOIN pg_class ref_cls ON ref_cls.oid = con.confrelid"
             " LEFT JOIN pg_attribute ref_att"
             " ON ref_att.attrelid = con.confrelid AND ref_att.attnum = con.confkey[cols.ord::int]"
-            " WHERE con.conrelid = to_regclass(?) AND con.contype IN ('u', 'f')"
+            " WHERE con.conrelid = to_regclass(?) AND con.contype IN ('p', 'u', 'f')"
             " ORDER BY con.conname, cols.ord"
         )
 

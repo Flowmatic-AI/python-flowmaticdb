@@ -56,17 +56,17 @@ class ConstraintsMixin:
 
     def foreign_key_constraint(
         self,
-        column: str,
+        column: str | list[str],
         ref_table: str,
-        ref_column: str,
+        ref_column: str | list[str],
         name: str | None = None,
-        on_delete: ReferentialActionEnum | None = None,
-        on_update: ReferentialActionEnum | None = None,
+        on_delete: ReferentialActionEnum | str | None = None,
+        on_update: ReferentialActionEnum | str | None = None,
     ) -> Self:
         self._constraints.append(ForeignKeyConstraint(
-            columns=[column],
+            columns=[column] if isinstance(column, str) else list(column),
             ref_table=ref_table,
-            ref_columns=[ref_column],
+            ref_columns=[ref_column] if isinstance(ref_column, str) else list(ref_column),
             name=name,
             on_delete=on_delete,
             on_update=on_update,
@@ -213,17 +213,17 @@ class AltersMixin:
 
     def add_foreign_key_constraint(
         self,
-        column: str,
+        column: str | list[str],
         ref_table: str,
-        ref_column: str,
+        ref_column: str | list[str],
         name: str | None = None,
-        on_delete: ReferentialActionEnum | None = None,
-        on_update: ReferentialActionEnum | None = None,
+        on_delete: ReferentialActionEnum | str | None = None,
+        on_update: ReferentialActionEnum | str | None = None,
     ) -> Self:
         self._alters.append(AddForeignKeyConstraint(
-            columns=[column],
+            columns=[column] if isinstance(column, str) else list(column),
             ref_table=ref_table,
-            ref_columns=[ref_column],
+            ref_columns=[ref_column] if isinstance(ref_column, str) else list(ref_column),
             name=name,
             on_delete=on_delete,
             on_update=on_update,

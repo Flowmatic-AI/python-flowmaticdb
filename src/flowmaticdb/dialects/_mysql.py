@@ -150,7 +150,7 @@ class MySQLDialect(SQLDialect):
             " AND rc.constraint_name = tc.constraint_name"
             " AND rc.table_name = tc.table_name"
             f" WHERE tc.table_name = ?{schema_filter}"
-            " AND tc.constraint_type IN ('UNIQUE', 'FOREIGN KEY')"
+            " AND tc.constraint_type IN ('PRIMARY KEY', 'UNIQUE', 'FOREIGN KEY')"
             " ORDER BY tc.constraint_name, kcu.ordinal_position"
         )
 

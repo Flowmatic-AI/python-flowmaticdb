@@ -101,27 +101,42 @@ class SQLiteDialect(SQLDialect):
 
         params: list[Any]
         if schema is None:
+            table_info = "pragma_table_info(?)"
             index_list = "pragma_index_list(?)"
             index_info = "pragma_index_info(il.name)"
             foreign_key_list = "pragma_foreign_key_list(?)"
-            params = [name, name]
+            params = [name, name, name]
         else:
+            table_info = "pragma_table_info(?, ?)"
             index_list = "pragma_index_list(?, ?)"
             index_info = "pragma_index_info(il.name, ?)"
             foreign_key_list = "pragma_foreign_key_list(?, ?)"
-            params = [name, schema, schema, name, schema]
+            params = [name, schema, name, schema, schema, name, schema]
 
         query = (
             "SELECT"
-            " 'u:' || il.name AS constraint_id,"
-            " il.name AS constraint_name,"
-            " 'UNIQUE' AS constraint_type,"
-            " ii.name AS column_name,"
-            " ii.seqno + 1 AS column_position,"
+            " 'p' AS constraint_id,"
+            " NULL AS constraint_name,"
+            " 'PRIMARY KEY' AS constraint_type,"
+            " ti.name AS column_name,"
+            " ti.pk AS column_position,"
             " NULL AS ref_table,"
             " NULL AS ref_column,"
             " NULL AS on_delete,"
             " NULL AS on_update"
+            f" FROM {table_info} AS ti"
+            " WHERE ti.pk > 0"
+            " UNION ALL"
+            " SELECT"
+            " 'u:' || il.name,"
+            " il.name,"
+            " 'UNIQUE',"
+            " ii.name,"
+            " ii.seqno + 1,"
+            " NULL,"
+            " NULL,"
+            " NULL,"
+            " NULL"
             f" FROM {index_list} AS il"
             f" JOIN {index_info} AS ii"
             ' WHERE il."unique" = 1 AND il.origin = \'u\''

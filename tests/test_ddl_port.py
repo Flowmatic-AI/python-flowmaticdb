@@ -191,6 +191,38 @@ def test_foreign_key_constraint_emits_referential_actions_in_create_table(sql_di
     assert "ON UPDATE SET NULL" in sql
 
 
+def test_foreign_key_constraint_takes_composite_columns(sql_dialect: SQLDialect, mock_db) -> None:
+    """Lists of columns pair up positionally with the referenced columns."""
+    q = CreateTableQuery(sql_dialect, "order_lines", database=mock_db)
+    q.integer("order_id")
+    q.integer("user_id")
+    q.foreign_key_constraint(["order_id", "user_id"], "orders", ["id", "user_id"])
+    sql = q.to_query_with_params().query
+
+    assert 'FOREIGN KEY ("order_id", "user_id") REFERENCES "orders" ("id", "user_id")' in sql
+
+
+def test_add_foreign_key_constraint_takes_composite_columns(sql_dialect: SQLDialect, mock_db) -> None:
+    """ALTER TABLE takes the same composite shape CREATE TABLE does."""
+    q = AlterTableQuery(sql_dialect, "order_lines", database=mock_db)
+    q.add_foreign_key_constraint(["order_id", "user_id"], "orders", ["id", "user_id"])
+    result = q.to_query_with_params()
+
+    assert 'FOREIGN KEY ("order_id", "user_id") REFERENCES "orders" ("id", "user_id")' in result[0].query
+
+
+def test_foreign_key_constraint_keeps_a_referential_action_it_does_not_know(
+    sql_dialect: SQLDialect,
+    mock_db,
+) -> None:
+    """A described key may carry a rule the enum does not list; it must survive."""
+    q = CreateTableQuery(sql_dialect, "posts", database=mock_db)
+    q.integer("id")
+    q.foreign_key_constraint("user_id", "users", "id", on_delete="SET DEFAULT")
+
+    assert "ON DELETE SET DEFAULT" in q.to_query_with_params().query
+
+
 def test_create_table_builders_produce_column_dataclass_instances(sql_dialect: SQLDialect, mock_db) -> None:
     """Every ColumnsDefinitionMixin builder method must append a `Column`
     dataclass to `_columns`, not an untyped dict -- this is the crux of the

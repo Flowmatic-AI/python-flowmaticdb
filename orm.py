@@ -79,7 +79,6 @@ class Post(Model):
     comments: HasMany[Comment] = has_many()
     tags: ManyToMany[Tag] = many_to_many("post_tags")
 
-
 class User(Model):
     __table__ = "users"
 
@@ -172,7 +171,7 @@ def connect(engine: str) -> DB:
     if engine == "mysql":
         return DB.connect_mysql("flowmaticdb", host="localhost", user="root", password="", debug_callback=debug_callback)
 
-    return DB.connect_sqlite(":memory:", debug_callback=debug_callback)
+    return DB.connect_sqlite("database.sqlite", debug_callback=debug_callback)
 
 
 def drop_schema(db: DB) -> None:
@@ -270,6 +269,8 @@ alice = User(
     .execute()
 )
 
+exit()
+
 join_rows = (
     db.select("post_tags")
     .execute()
@@ -349,6 +350,7 @@ missing = (
 matching = (
     db.select_models(User)
     .where_contains("email_address", "example.com")
+    .where_exists(db.select("email_addresses").where_equals("email", "example.com"))
     .limit(1)
     .fetch_models()
 )

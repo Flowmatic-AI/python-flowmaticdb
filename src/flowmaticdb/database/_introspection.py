@@ -98,11 +98,18 @@ def parse_constraints(rows: list[dict[str, Any]]) -> TableConstraints:
     return constraints
 
 
+def parse_primary_keys(rows: list[dict[str, Any]]) -> list[str]:
+    """Collect the primary key columns, in key order, from the constraint rows."""
+    return [str(row["column_name"]) for row in rows if str(row["constraint_type"]) == "PRIMARY KEY"]
+
+
 def describe_table(database: DatabaseABC, dialect: DialectABC, table: str | list[str]) -> TableDescription:
     column_rows = database.query_with_params(dialect.describe_table_columns(table)).fetch_dicts()
     constraint_rows = database.query_with_params(dialect.describe_table_constraints(table)).fetch_dicts()
 
     return TableDescription(
+        table=table,
         columns=parse_columns(dialect, column_rows),
+        primary_keys=parse_primary_keys(constraint_rows),
         constraints=parse_constraints(constraint_rows),
     )

@@ -536,6 +536,13 @@ db.create_table("orders").if_not_exists() \
         on_delete=ReferentialActionEnum.CASCADE,
     ) \
     .execute()
+
+# A composite foreign key: pass the columns as lists, in matching order
+db.create_table("order_lines").if_not_exists() \
+    .integer("order_id") \
+    .integer("user_id") \
+    .foreign_key_constraint(["order_id", "user_id"], "orders", ["id", "user_id"]) \
+    .execute()
 ```
 
 ### ALTER TABLE
@@ -557,6 +564,11 @@ db.alter_table("users") \
 db.alter_table("users") \
     .add_unique_constraint(["email"], name="uq_users_email") \
     .add_foreign_key_constraint("role_id", "roles", "id") \
+    .execute()
+
+# Composite keys take lists here too
+db.alter_table("order_lines") \
+    .add_foreign_key_constraint(["order_id", "user_id"], "orders", ["id", "user_id"]) \
     .execute()
 
 # Drop constraints
@@ -1328,6 +1340,8 @@ description = db.describe_table("users")
 for column in description.columns:
     print(column.name, column.type, column.not_null, column.default)
 
+print(description.primary_keys)   # ['id']
+
 for unique in description.constraints.unique:
     print(unique.name, unique.columns)
 
@@ -1342,10 +1356,15 @@ default schema. An unknown table describes as empty rather than raising.
 
 | Field | Type |
 |-------|------|
+| `table` | `str \| list[str]` |
 | `columns` | `list[Column]` |
+| `primary_keys` | `list[str]` |
 | `constraints` | `TableConstraints` |
 | `constraints.unique` | `list[UniqueConstraint]` |
 | `constraints.foreign_keys` | `list[ForeignKeyConstraint]` |
+
+`primary_keys` is the key in key order, whether it came from an identity column,
+a single declared key or a composite one, and is `[]` for a table without one.
 
 They are the same dataclasses the DDL builders take, and a described column
 comes back in the **same terms it was declared in** — `type` is a `TypeEnum`
@@ -1431,8 +1450,6 @@ The rest of a described column is still a **report, not a recipe**:
   name still resolves — SQLite searches `main`, then `temp`, then every
   attached database — but the `AUTOINCREMENT` probe only reads `main`, so an
   attached table described by its bare name comes back `auto_increment=False`.
-- Primary keys are not reported. Ask for the columns and read `auto_increment`,
-  or query the catalog directly.
 
 Under the hood each dialect renders two queries whose result columns are
 normalised, so one parser reads all three engines:
@@ -1440,6 +1457,87 @@ normalised, so one parser reads all three engines:
 PostgreSQL reads `pg_catalog` (and so needs 9.6 or newer for `to_regclass`),
 SQLite reads the `pragma_*` table-valued functions, MySQL and the base
 `SQLDialect` read `information_schema`.
+
+### `TableDescription.create_table()`
+
+A description is enough to build the table again, on any connection:
+
+```python
+description = db.describe_table("users")
+
+description.create_table(other_db)                     # same name, another database
+description.create_table(other_db, if_not_exists=True)
+
+description.table = "users_archive"                    # or another name
+description.table = ["reporting", "users"]             # or another schema
+description.create_table(db)
+```
+
+It returns the `ResultABC` of the `CREATE TABLE` and replays the columns, the
+primary key, the unique constraints and the foreign keys — the same builder
+calls `db.create_table()` takes, so the caveats above are the caveats here: a
+width the engine never stored comes back as the engine's own, and a SQLite
+foreign key is rebuilt unnamed because SQLite never had a name for it.
+
+Two flags leave constraints out of the statement:
+
+```python
+description.create_table(db, skip_unique_constraints=True)
+description.create_table(db, skip_foreign_key_constraints=True)
+```
+
+They reach only `constraints.unique` and `constraints.foreign_keys` — the
+columns and the primary key are always built, and the description itself is
+untouched, so the same one can build a bare table now and the full one later.
+
+Skipping the foreign keys is what makes a **bulk copy** work: keys are replayed
+by referenced table name, so rebuilding a set of tables one at a time fails
+wherever a key points at a table that does not exist yet. Build the tables
+without them, then add them back once every table is there:
+
+```python
+descriptions = [db.describe_table(table) for table in db.list_tables()]
+
+for description in descriptions:
+    description.create_table(other_db, skip_foreign_key_constraints=True)
+
+for description in descriptions:
+    for foreign_key in description.constraints.foreign_keys:
+        other_db.alter_table(description.table) \
+            .add_foreign_key_constraint(
+                foreign_key.columns,
+                foreign_key.ref_table,
+                foreign_key.ref_columns,
+                name=foreign_key.name,
+                on_delete=foreign_key.on_delete,
+                on_update=foreign_key.on_update,
+            ) \
+            .execute()
+```
+
+(SQLite cannot add a foreign key to an existing table at all, so there the order
+of the first loop is what has to be right.)
+
+**Constraint names are replayed too.** That is what you want across databases
+and schemas, where the copy should keep the names the original had. Copying
+under a *different name in the same schema* is the case to watch: PostgreSQL and
+MySQL reject a second constraint by the same name. Skip the constraints, or
+clear the names you do not want:
+
+```python
+description = db.describe_table("users")
+description.table = "users_archive"
+
+for constraint in description.constraints.unique:
+    constraint.name = None
+for constraint in description.constraints.foreign_keys:
+    constraint.name = None
+
+description.create_table(db)
+```
+
+SQLite needs none of that — it stores no constraint names, so the dialect drops
+them on the way out.
 
 ---
 
