@@ -1377,6 +1377,73 @@ def test_mysql_create_table_from_a_description(
         db.exec("DROP TABLE IF EXISTS `intro_roles`")
 
 
+def test_mysql_describe_table_indexes(
+    mysql_adapter: MySQLAdapter, mysql_dialect: MySQLDialect
+) -> None:
+    """describe_table() reports the standalone indexes, and only those."""
+    db = DB(mysql_adapter, mysql_dialect)
+    _introspection_schema(db)
+    db.create_index("intro_users", "idx_intro_users_role").columns("role_id").execute()
+
+    try:
+        description = db.describe_table("intro_users")
+
+        assert [(index.name, index.columns, index.unique) for index in description.indexes] == [
+            ("idx_intro_users_role", ["role_id"], False),
+        ]
+
+        # MySQL builds an index for every unique constraint and for every foreign
+        # key, and both are described as the constraint they belong to.
+        assert [index.name for index in description.indexes] == ["idx_intro_users_role"]
+        assert sorted(constraint.name for constraint in description.constraints.unique) == \
+            ["intro_users_email_key", "intro_users_pair_key"]
+
+        # A unique index is a unique constraint on MySQL — the engine makes no
+        # distinction — so it describes as one rather than as an index.
+        db.create_index("intro_users", "idx_intro_users_pair").columns(["name", "email"]).unique().execute()
+        described = db.describe_table("intro_users")
+
+        assert [index.name for index in described.indexes] == ["idx_intro_users_role"]
+        assert "idx_intro_users_pair" in [constraint.name for constraint in described.constraints.unique]
+    finally:
+        db.exec("DROP TABLE IF EXISTS `intro_users`")
+        db.exec("DROP TABLE IF EXISTS `intro_roles`")
+
+
+def test_mysql_create_table_from_a_description_replays_the_indexes(
+    mysql_adapter: MySQLAdapter, mysql_dialect: MySQLDialect
+) -> None:
+    """An index name is per table on MySQL, so a copy keeps the names it described."""
+    db = DB(mysql_adapter, mysql_dialect)
+    _introspection_schema(db)
+    db.create_index("intro_users", "idx_intro_users_role").columns("role_id").execute()
+
+    try:
+        description = db.describe_table("intro_users")
+        description.create_table(db, override_name="intro_users_copy", skip_foreign_key_constraints=True)
+
+        copy = db.describe_table("intro_users_copy")
+
+        assert [(index.name, index.columns, index.unique) for index in copy.indexes] == [
+            ("idx_intro_users_role", ["role_id"], False),
+        ]
+
+        description.create_table(
+            db,
+            override_name="intro_users_bare",
+            skip_foreign_key_constraints=True,
+            skip_indexes=True,
+        )
+
+        assert db.describe_table("intro_users_bare").indexes == []
+        assert [index.name for index in description.indexes] == ["idx_intro_users_role"]
+    finally:
+        db.exec("DROP TABLE IF EXISTS `intro_users_bare`")
+        db.exec("DROP TABLE IF EXISTS `intro_users_copy`")
+        db.exec("DROP TABLE IF EXISTS `intro_users`")
+        db.exec("DROP TABLE IF EXISTS `intro_roles`")
+
+
 def test_mysql_index_and_describe_with_a_qualified_table(
     mysql_adapter: MySQLAdapter, mysql_dialect: MySQLDialect
 ) -> None:

@@ -651,7 +651,9 @@ exists = db.prepared(
 
 A standalone index is not a constraint: `describe_table()` will not report a
 `CREATE UNIQUE INDEX` under `constraints.unique` on PostgreSQL or SQLite (MySQL
-makes no distinction between the two, so it does).
+makes no distinction between the two, so it does). It reports it under
+[`description.indexes`](#describe_table) instead, along with every other index a
+`CREATE INDEX` made.
 
 ### DROP TABLE
 
@@ -1347,6 +1349,9 @@ for unique in description.constraints.unique:
 
 for foreign_key in description.constraints.foreign_keys:
     print(foreign_key.columns, "->", foreign_key.ref_table, foreign_key.ref_columns)
+
+for index in description.indexes:
+    print(index.name, index.columns, index.unique)
 ```
 
 Works on all three engines. Pass `["schema", "table"]` to look outside the
@@ -1362,9 +1367,30 @@ default schema. An unknown table describes as empty rather than raising.
 | `constraints` | `TableConstraints` |
 | `constraints.unique` | `list[UniqueConstraint]` |
 | `constraints.foreign_keys` | `list[ForeignKeyConstraint]` |
+| `indexes` | `list[Index]` |
 
 `primary_keys` is the key in key order, whether it came from an identity column,
 a single declared key or a composite one, and is `[]` for a table without one.
+
+`indexes` is the **standalone** indexes — the ones a `CREATE INDEX` made
+(`Index(name, columns, unique)`), in name order. The index behind a primary key
+or a unique constraint is *not* one of them: it is already described as that
+constraint, and describing it twice would make a replay build it twice. Two
+kinds are left out entirely, because `create_index()` cannot express them and
+replaying them would build a different index: an index over an **expression**
+(`LOWER(name)`) and a **partial** one (`... WHERE email IS NOT NULL`).
+
+An `Index` carries a name, its key columns and whether it is unique, and nothing
+else — a per-column `DESC`, a collation or an operator class is not reported and
+so is not replayed. An index built with something other than the default method
+is left out for the same reason a partial one is: PostgreSQL describes only its
+b-tree indexes, and MySQL only its `BTREE` and `HASH` ones, so a `GIN`, `GiST` or
+`FULLTEXT` index is never handed back as a plain one.
+
+One engine difference is worth knowing: MySQL has no separate notion of a unique
+index, so a `CREATE UNIQUE INDEX` there describes back as a `UniqueConstraint`
+rather than as a unique `Index`. PostgreSQL and SQLite keep the two apart and
+report it as an index.
 
 They are the same dataclasses the DDL builders take, and a described column
 comes back in the **same terms it was declared in** — `type` is a `TypeEnum`
@@ -1451,9 +1477,9 @@ The rest of a described column is still a **report, not a recipe**:
   attached database — but the `AUTOINCREMENT` probe only reads `main`, so an
   attached table described by its bare name comes back `auto_increment=False`.
 
-Under the hood each dialect renders two queries whose result columns are
-normalised, so one parser reads all three engines:
-`describe_table_columns()` and `describe_table_constraints()` on the dialect.
+Under the hood each dialect renders three queries whose result columns are
+normalised, so one parser reads all three engines: `describe_table_columns()`,
+`describe_table_constraints()` and `describe_table_indexes()` on the dialect.
 PostgreSQL reads `pg_catalog` (and so needs 9.6 or newer for `to_regclass`),
 SQLite reads the `pragma_*` table-valued functions, MySQL and the base
 `SQLDialect` read `information_schema`.
@@ -1479,15 +1505,21 @@ calls `db.create_table()` takes, so the caveats above are the caveats here: a
 width the engine never stored comes back as the engine's own, and a SQLite
 foreign key is rebuilt unnamed because SQLite never had a name for it.
 
-Two flags leave constraints out of the statement:
+The described `indexes` are replayed too, each as its own `CREATE INDEX` after
+the table exists (`if_not_exists=True` guards those statements as well, except
+on MySQL, which has no `CREATE INDEX IF NOT EXISTS` — there they are simply run
+unguarded). The `ResultABC` you get back is still the `CREATE TABLE`'s.
+
+Three flags leave parts out of the build:
 
 ```python
 description.create_table(db, skip_unique_constraints=True)
 description.create_table(db, skip_foreign_key_constraints=True)
+description.create_table(db, skip_indexes=True)
 ```
 
-They reach only `constraints.unique` and `constraints.foreign_keys` — the
-columns and the primary key are always built, and the description itself is
+They reach only `constraints.unique`, `constraints.foreign_keys` and `indexes` —
+the columns and the primary key are always built, and the description itself is
 untouched, so the same one can build a bare table now and the full one later.
 
 Skipping the foreign keys is what makes a **bulk copy** work: keys are replayed
@@ -1538,6 +1570,23 @@ description.create_table(db)
 
 SQLite needs none of that — it stores no constraint names, so the dialect drops
 them on the way out.
+
+**Index names are replayed too, and they collide along different lines.** An
+index name belongs to the schema on PostgreSQL and SQLite (and to the table on
+MySQL), so it is those two engines that reject a copy landing beside its
+original — SQLite included this time. An index has to have a name, so rename
+them rather than clearing them:
+
+```python
+description.indexes = [
+    dataclasses.replace(index, name=f"archive_{index.name}")
+    for index in description.indexes
+]
+
+description.create_table(db)
+```
+
+Or leave the indexes out of the copy altogether with `skip_indexes=True`.
 
 ---
 
@@ -1694,7 +1743,7 @@ built on.
 | `driver` | — | `"sqlite"`, `"postgresql"` or `"mysql"` |
 | `execute_sql` | `sql`, `params` | every row the statement produced |
 | `list_tables` | `schema` | table names |
-| `describe_table` | `table` | columns, unique constraints, foreign keys |
+| `describe_table` | `table` | columns, unique constraints, foreign keys, indexes |
 | `select` | `table`, `wheres`, `group_by`, `havings`, `limit`, `offset` | matched rows |
 | `insert` | `table`, `values`, `returning`, `last_insert_id` | the returned rows |
 | `update` | `table`, `values`, `wheres` | confirmation |

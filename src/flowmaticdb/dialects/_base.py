@@ -15,6 +15,7 @@ if TYPE_CHECKING:
 class DialectABC(ABC):
     on_conflict: bool
     returning: bool
+    index_if_not_exists: bool
 
     def __init__(self, version: str = "0", options: dict[str, Any] | None = None) -> None:
         self._version_str = version
@@ -156,6 +157,10 @@ class DialectABC(ABC):
 
     @abstractmethod
     def describe_table_constraints(self, table: Any) -> QueryWithParams:
+        ...
+
+    @abstractmethod
+    def describe_table_indexes(self, table: Any) -> QueryWithParams:
         ...
 
     @abstractmethod

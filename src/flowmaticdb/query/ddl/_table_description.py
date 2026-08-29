@@ -5,6 +5,7 @@ from typing import TYPE_CHECKING
 
 from flowmaticdb.query.ddl._column import Column
 from flowmaticdb.query.ddl._foreign_key_constraint import ForeignKeyConstraint
+from flowmaticdb.query.ddl._index import Index
 from flowmaticdb.query.ddl._unique_constraint import UniqueConstraint
 
 if TYPE_CHECKING:
@@ -24,16 +25,21 @@ class TableDescription:
     columns: list[Column] = field(default_factory=list)
     primary_keys: list[str] = field(default_factory=list)
     constraints: TableConstraints = field(default_factory=TableConstraints)
+    indexes: list[Index] = field(default_factory=list)
 
     def create_table(
         self,
         db: DatabaseABC,
         if_not_exists: bool = False,
+        override_name: str | None = None,
         skip_unique_constraints: bool = False,
         skip_foreign_key_constraints: bool = False,
+        skip_indexes: bool = False,
     ) -> ResultABC:
         """Recreate the described table on ``db`` and run the statement."""
-        query = db.create_table(self.table)
+        table_name = override_name if override_name is not None else self.table
+
+        query = db.create_table(table_name)
 
         if if_not_exists:
             query.if_not_exists()
@@ -66,4 +72,20 @@ class TableDescription:
                     on_update=foreign_key.on_update,
                 )
 
-        return query.execute()
+        result = query.execute()
+
+        # An index is a statement of its own, so it can only be built once the table is.
+        if not skip_indexes:
+            for index in self.indexes:
+                index_query = db.create_index(table_name, index.name).columns(list(index.columns))
+
+                if index.unique:
+                    index_query.unique()
+
+                # MySQL has no CREATE INDEX IF NOT EXISTS, and asking for one there raises.
+                if if_not_exists and db.dialect.index_if_not_exists:
+                    index_query.if_not_exists()
+
+                index_query.execute()
+
+        return result

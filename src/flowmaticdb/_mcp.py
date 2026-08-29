@@ -293,12 +293,17 @@ The transaction around it stays open.""",
                 "on_update": self._referential_action(foreign_key.on_update),
             })
 
+        indexes: list[dict[str, Any]] = []
+        for index in description.indexes:
+            indexes.append({"name": index.name, "columns": index.columns, "unique": index.unique})
+
         return {
             "table": table,
             "columns": columns,
             "primary_keys": description.primary_keys,
             "unique_constraints": unique,
             "foreign_keys": foreign_keys,
+            "indexes": indexes,
         }
 
     def select(

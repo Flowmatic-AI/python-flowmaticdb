@@ -188,6 +188,32 @@ class PostgresqlDialect(SQLDialect):
 
         return QueryWithParams(query=query, params=[self._table_name(table)])
 
+    def describe_table_indexes(self, table: Any) -> QueryWithParams:
+        # INCLUDE columns are not key columns, and only 11 and up can tell them apart.
+        key_columns = "i.indnkeyatts" if self._version >= 110000 else "i.indnatts"
+
+        query = (
+            "SELECT"
+            " i.indexrelid AS index_id,"
+            " cls.relname AS index_name,"
+            " att.attname AS column_name,"
+            " cols.pos + 1 AS column_position,"
+            " CASE WHEN i.indisunique THEN 1 ELSE 0 END AS is_unique,"
+            " CASE WHEN i.indpred IS NOT NULL THEN 1 ELSE 0 END AS is_partial"
+            " FROM pg_index i"
+            " JOIN pg_class cls ON cls.oid = i.indexrelid"
+            " JOIN pg_am am ON am.oid = cls.relam"
+            f" CROSS JOIN LATERAL generate_series(0, {key_columns} - 1) AS cols(pos)"
+            " LEFT JOIN pg_attribute att"
+            " ON att.attrelid = i.indrelid AND att.attnum = i.indkey[cols.pos]"
+            " WHERE i.indrelid = to_regclass(?) AND NOT i.indisprimary"
+            " AND am.amname = 'btree'"
+            " AND NOT EXISTS (SELECT 1 FROM pg_constraint con WHERE con.conindid = i.indexrelid)"
+            " ORDER BY cls.relname, cols.pos"
+        )
+
+        return QueryWithParams(query=query, params=[self._table_name(table)])
+
     def cast_to_query(self, value: Any) -> str:
         if isinstance(value, bool):
             return "TRUE" if value else "FALSE"

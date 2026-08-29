@@ -269,8 +269,6 @@ alice = User(
     .execute()
 )
 
-exit()
-
 join_rows = (
     db.select("post_tags")
     .execute()
@@ -350,7 +348,6 @@ missing = (
 matching = (
     db.select_models(User)
     .where_contains("email_address", "example.com")
-    .where_exists(db.select("email_addresses").where_equals("email", "example.com"))
     .limit(1)
     .fetch_models()
 )

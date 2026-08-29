@@ -9,6 +9,7 @@ from flowmaticdb.query.ddl._constraint import ConstraintABC
 from flowmaticdb.query.ddl._drop_column import DropColumn
 from flowmaticdb.query.ddl._drop_constraint import DropConstraint
 from flowmaticdb.query.ddl._foreign_key_constraint import ForeignKeyConstraint
+from flowmaticdb.query.ddl._index import Index
 from flowmaticdb.query.ddl._raw_alter import RawAlter
 from flowmaticdb.query.ddl._raw_constraint import RawConstraint
 from flowmaticdb.query.ddl._rename_column import RenameColumn
@@ -27,6 +28,7 @@ __all__ = [
     "DropColumn",
     "DropConstraint",
     "ForeignKeyConstraint",
+    "Index",
     "RawAlter",
     "RawConstraint",
     "RenameColumn",

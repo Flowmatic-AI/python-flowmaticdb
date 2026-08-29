@@ -157,6 +157,35 @@ class SQLiteDialect(SQLDialect):
 
         return QueryWithParams(query=query, params=params)
 
+    def describe_table_indexes(self, table: Any) -> QueryWithParams:
+        schema, name = self._schema_and_table(table)
+
+        params: list[Any]
+        if schema is None:
+            index_list = "pragma_index_list(?)"
+            index_info = "pragma_index_info(il.name)"
+            params = [name]
+        else:
+            index_list = "pragma_index_list(?, ?)"
+            index_info = "pragma_index_info(il.name, ?)"
+            params = [name, schema, schema]
+
+        query = (
+            "SELECT"
+            " il.name AS index_id,"
+            " il.name AS index_name,"
+            " ii.name AS column_name,"
+            " ii.seqno + 1 AS column_position,"
+            ' il."unique" AS is_unique,'
+            ' il."partial" AS is_partial'
+            f" FROM {index_list} AS il"
+            f" JOIN {index_info} AS ii"
+            " WHERE il.origin = 'c'"
+            " ORDER BY il.name, ii.seqno"
+        )
+
+        return QueryWithParams(query=query, params=params)
+
     @staticmethod
     def _like_to_glob(like_pattern: str) -> str:
         glob_escape: dict[str, str | int | None] = {"*": "[*]", "?": "[?]", "[": "[[]", "]": "[]]"}

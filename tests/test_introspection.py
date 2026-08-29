@@ -6,6 +6,7 @@ dialect renders — the live round-trips live in the integration modules.
 """
 from __future__ import annotations
 
+import dataclasses
 import sqlite3
 import sys
 from collections.abc import Iterator
@@ -14,7 +15,12 @@ import pytest
 
 from flowmaticdb import QueryError
 from flowmaticdb.database import DB
-from flowmaticdb.database._introspection import parse_columns, parse_constraints, parse_primary_keys
+from flowmaticdb.database._introspection import (
+    parse_columns,
+    parse_constraints,
+    parse_indexes,
+    parse_primary_keys,
+)
 from flowmaticdb.dialects import MySQLDialect, PostgresqlDialect, SQLDialect, SQLiteDialect
 from flowmaticdb.query.ddl import TableConstraints, TableDescription
 from flowmaticdb.query.enums import ReferentialActionEnum, TypeEnum
@@ -602,3 +608,218 @@ def test_sqlite_describe_table_constraints_binds_every_pragma(sqlite_dialect: SQ
     assert sqlite_dialect.describe_table_constraints("users").params == ["users", "users", "users"]
     assert sqlite_dialect.describe_table_constraints(["app", "users"]).params == \
         ["users", "app", "users", "app", "app", "users", "app"]
+
+
+def test_describe_table_indexes(db: DB) -> None:
+    db.create_index("users", "idx_users_name").columns("name").execute()
+    db.create_index("users", "idx_users_pair").columns(["name", "email"]).unique().execute()
+
+    indexes = db.describe_table("users").indexes
+
+    assert [(index.name, index.columns, index.unique) for index in indexes] == [
+        ("idx_users_name", ["name"], False),
+        ("idx_users_pair", ["name", "email"], True),
+    ]
+
+
+def test_describe_table_indexes_ignores_the_constraint_indexes(db: DB) -> None:
+    """A unique constraint and a primary key are indexes underneath.
+
+    They are described as constraints, so describing them as indexes too would
+    make a replay build each of them twice.
+    """
+    assert db.describe_table("users").indexes == []
+    assert [constraint.columns for constraint in db.describe_table("users").constraints.unique] == \
+        [["email"], ["name", "email"]]
+
+
+def test_describe_table_skips_an_expression_or_partial_index(db: DB) -> None:
+    """Neither can be rebuilt by `create_index()`, so neither is described."""
+    db.exec("CREATE INDEX idx_users_lower ON users (LOWER(name))")
+    db.exec("CREATE INDEX idx_users_named ON users (name) WHERE email IS NOT NULL")
+    db.create_index("users", "idx_users_email").columns("email").execute()
+
+    assert [index.name for index in db.describe_table("users").indexes] == ["idx_users_email"]
+
+
+def test_describe_table_without_indexes(db: DB) -> None:
+    assert db.describe_table("roles").indexes == []
+    assert db.describe_table("nope").indexes == []
+
+
+def test_describe_table_indexes_in_an_attached_schema(db: DB, tmp_path) -> None:
+    db.exec(f"ATTACH DATABASE '{tmp_path / 'reporting.sqlite'}' AS reporting")
+    db.create_table(["reporting", "metrics"]).identity("id").string("kind", 32).execute()
+    db.create_index(["reporting", "metrics"], "idx_metrics_kind").columns("kind").execute()
+
+    indexes = db.describe_table(["reporting", "metrics"]).indexes
+
+    assert [(index.name, index.columns) for index in indexes] == [("idx_metrics_kind", ["kind"])]
+
+
+def test_create_table_from_a_description_replays_the_indexes(db: DB) -> None:
+    db.create_index("users", "idx_users_name").columns("name").execute()
+    db.create_index("users", "idx_users_pair").columns(["name", "email"]).unique().execute()
+
+    description = db.describe_table("users")
+    description.table = "users_copy"
+    # An index name is database-wide, so a copy landing beside the original needs
+    # names of its own — the same rule the constraint names follow.
+    description.indexes = [
+        dataclasses.replace(index, name=f"copy_{index.name}") for index in description.indexes
+    ]
+    description.create_table(db)
+
+    copy = db.describe_table("users_copy")
+
+    assert [(index.name, index.columns, index.unique) for index in copy.indexes] == [
+        ("copy_idx_users_name", ["name"], False),
+        ("copy_idx_users_pair", ["name", "email"], True),
+    ]
+
+
+def test_create_table_from_a_description_replays_an_index_name_verbatim(db: DB) -> None:
+    """The names are replayed as described, so a same-database copy collides."""
+    db.create_index("users", "idx_users_name").columns("name").execute()
+
+    description = db.describe_table("users")
+
+    with pytest.raises(sqlite3.OperationalError):
+        description.create_table(db, override_name="users_copy")
+
+
+def test_create_table_from_a_description_can_skip_the_indexes(db: DB) -> None:
+    db.create_index("users", "idx_users_name").columns("name").execute()
+
+    description = db.describe_table("users")
+    description.create_table(db, override_name="users_copy", skip_indexes=True)
+
+    assert db.describe_table("users_copy").indexes == []
+    # Skipping is a build-time choice, not an edit of the description.
+    assert [index.name for index in description.indexes] == ["idx_users_name"]
+
+
+def test_create_table_from_a_description_guards_the_indexes_too(db: DB) -> None:
+    """`if_not_exists` reaches the CREATE INDEX statements, not just the table."""
+    db.create_index("users", "idx_users_name").columns("name").execute()
+
+    description = db.describe_table("users")
+    description.create_table(db, if_not_exists=True)
+
+    assert [index.name for index in db.describe_table("users").indexes] == ["idx_users_name"]
+
+
+def test_create_table_from_a_description_leaves_the_indexes_alone(db: DB) -> None:
+    db.create_index("users", "idx_users_pair").columns(["name", "email"]).unique().execute()
+
+    description = db.describe_table("users")
+    description.indexes = [dataclasses.replace(index, name="copy_pair") for index in description.indexes]
+    description.create_table(db, override_name="users_copy")
+
+    assert description.indexes[0].columns == ["name", "email"]
+
+
+def test_parse_indexes_groups_by_index_and_drops_what_cannot_be_replayed(
+    sqlite_dialect: SQLiteDialect,
+) -> None:
+    indexes = parse_indexes(sqlite_dialect, [
+        {"index_id": "1", "index_name": "idx_pair", "column_name": "name",
+         "column_position": 1, "is_unique": 1, "is_partial": 0},
+        {"index_id": "1", "index_name": "idx_pair", "column_name": "email",
+         "column_position": 2, "is_unique": 1, "is_partial": 0},
+        {"index_id": "2", "index_name": "idx_expression", "column_name": None,
+         "column_position": 1, "is_unique": 0, "is_partial": 0},
+        {"index_id": "3", "index_name": "idx_partial", "column_name": "age",
+         "column_position": 1, "is_unique": 0, "is_partial": 1},
+        {"index_id": "4", "index_name": "idx_age", "column_name": "age",
+         "column_position": 1, "is_unique": 0, "is_partial": 0},
+    ])
+
+    assert [(index.name, index.columns, index.unique) for index in indexes] == [
+        ("idx_pair", ["name", "email"], True),
+        ("idx_age", ["age"], False),
+    ]
+
+
+def test_parse_indexes_drops_an_index_whose_first_column_already_landed(
+    sqlite_dialect: SQLiteDialect,
+) -> None:
+    """A key the parser cannot replay disqualifies the whole index, not one column."""
+    indexes = parse_indexes(sqlite_dialect, [
+        {"index_id": "1", "index_name": "idx_mixed", "column_name": "name",
+         "column_position": 1, "is_unique": 0, "is_partial": 0},
+        {"index_id": "1", "index_name": "idx_mixed", "column_name": None,
+         "column_position": 2, "is_unique": 0, "is_partial": 0},
+        {"index_id": "1", "index_name": "idx_mixed", "column_name": "email",
+         "column_position": 3, "is_unique": 0, "is_partial": 0},
+    ])
+
+    assert indexes == []
+
+
+def test_dialects_alias_the_index_columns_the_same_way(
+    sql_dialect: SQLDialect,
+    pg_dialect: PostgresqlDialect,
+    mysql_dialect: MySQLDialect,
+    sqlite_dialect: SQLiteDialect,
+) -> None:
+    """One parser reads all four, so every dialect has to answer in the same names."""
+    for dialect in [sql_dialect, pg_dialect, mysql_dialect, sqlite_dialect]:
+        query = dialect.describe_table_indexes("users").query
+
+        for alias in ["index_id", "index_name", "column_name", "column_position", "is_unique", "is_partial"]:
+            assert f"AS {alias}" in query
+
+
+def test_sqlite_describe_table_indexes_reads_only_the_created_indexes(
+    sqlite_dialect: SQLiteDialect,
+) -> None:
+    query = sqlite_dialect.describe_table_indexes("users").query
+
+    # 'c' is what pragma_index_list reports for an index CREATE INDEX made; 'u'
+    # and 'pk' are the constraint ones the constraints query already reports.
+    assert "il.origin = 'c'" in query
+
+
+def test_sqlite_describe_table_indexes_binds_every_pragma(sqlite_dialect: SQLiteDialect) -> None:
+    assert sqlite_dialect.describe_table_indexes("users").params == ["users"]
+    assert sqlite_dialect.describe_table_indexes(["app", "users"]).params == ["users", "app", "app"]
+
+
+def test_pg_describe_table_indexes_resolves_through_to_regclass(pg_dialect: PostgresqlDialect) -> None:
+    assert pg_dialect.describe_table_indexes(["app", "users"]).params == ['"app"."users"']
+    assert "to_regclass(?)" in pg_dialect.describe_table_indexes("users").query
+
+
+def test_pg_describe_table_indexes_skips_include_columns_from_11(pg_dialect: PostgresqlDialect) -> None:
+    assert "indnkeyatts" in pg_dialect.describe_table_indexes("users").query
+    assert "indnkeyatts" not in PostgresqlDialect(version="10").describe_table_indexes("users").query
+
+
+def test_pg_describe_table_indexes_leaves_the_constraint_indexes_out(
+    pg_dialect: PostgresqlDialect,
+) -> None:
+    query = pg_dialect.describe_table_indexes("users").query
+
+    assert "NOT i.indisprimary" in query
+    assert "con.conindid = i.indexrelid" in query
+    # A GIN or GiST index cannot be rebuilt by create_index() either.
+    assert "am.amname = 'btree'" in query
+
+
+def test_mysql_describe_table_indexes_defaults_to_the_current_database(
+    mysql_dialect: MySQLDialect,
+) -> None:
+    qwp = mysql_dialect.describe_table_indexes("users")
+
+    assert "DATABASE()" in qwp.query
+    assert qwp.params == ["users"]
+    assert mysql_dialect.describe_table_indexes(["app", "users"]).params == ["users", "app"]
+
+
+def test_ansi_describe_table_indexes_uses_information_schema(sql_dialect: SQLDialect) -> None:
+    query = sql_dialect.describe_table_indexes("users").query
+
+    assert "information_schema.statistics" in query
+    # The index behind a constraint is described as that constraint, not twice.
+    assert "information_schema.table_constraints" in query

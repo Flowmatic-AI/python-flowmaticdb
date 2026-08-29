@@ -944,6 +944,33 @@ class SQLDialect(DialectABC):
 
         return QueryWithParams(query=query, params=params)
 
+    def describe_table_indexes(self, table: Any) -> QueryWithParams:
+        schema, name = self._schema_and_table(table)
+        params: list[Any] = [name]
+        schema_filter = self._schema_filter("s.table_schema", schema, params)
+
+        query = (
+            "SELECT"
+            " s.index_name AS index_id,"
+            " s.index_name AS index_name,"
+            " s.column_name AS column_name,"
+            " s.seq_in_index AS column_position,"
+            " CASE WHEN s.non_unique = 0 THEN 1 ELSE 0 END AS is_unique,"
+            " 0 AS is_partial"
+            " FROM information_schema.statistics s"
+            f" WHERE s.table_name = ?{schema_filter}"
+            " AND s.index_type IN ('BTREE', 'HASH')"
+            " AND NOT EXISTS ("
+            " SELECT 1 FROM information_schema.table_constraints tc"
+            " WHERE tc.table_name = s.table_name"
+            " AND tc.table_schema = s.table_schema"
+            " AND tc.constraint_name = s.index_name"
+            " )"
+            " ORDER BY s.index_name, s.seq_in_index"
+        )
+
+        return QueryWithParams(query=query, params=params)
+
     default_schema_sql: ClassVar[str | None] = None
 
     @staticmethod

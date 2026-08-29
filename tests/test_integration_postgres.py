@@ -1380,6 +1380,61 @@ def test_postgres_create_table_from_a_description(pg_db: DB) -> None:
         pg_db.exec('DROP TABLE IF EXISTS "intro_roles" CASCADE')
 
 
+def test_postgres_describe_table_indexes(pg_db: DB) -> None:
+    """describe_table() reports the standalone indexes, and only those."""
+    _introspection_schema(pg_db)
+    pg_db.create_index("intro_users", "idx_intro_users_role").columns("role_id").execute()
+    pg_db.create_index("intro_users", "idx_intro_users_pair").columns(["name", "email"]).unique().execute()
+    # Neither of these can be rebuilt by create_index(), so neither is described.
+    pg_db.exec("CREATE INDEX idx_intro_users_lower ON intro_users (LOWER(name))")
+    pg_db.exec("CREATE INDEX idx_intro_users_named ON intro_users (name) WHERE email IS NOT NULL")
+
+    try:
+        indexes = pg_db.describe_table("intro_users").indexes
+
+        assert [(index.name, index.columns, index.unique) for index in indexes] == [
+            ("idx_intro_users_pair", ["name", "email"], True),
+            ("idx_intro_users_role", ["role_id"], False),
+        ]
+
+        # The primary key and the unique constraints are indexes underneath, and
+        # are described as constraints rather than a second time as indexes.
+        assert "intro_users_email_key" not in [index.name for index in indexes]
+        assert pg_db.describe_table("intro_roles").indexes == []
+    finally:
+        pg_db.exec('DROP TABLE IF EXISTS "intro_users" CASCADE')
+        pg_db.exec('DROP TABLE IF EXISTS "intro_roles" CASCADE')
+
+
+def test_postgres_create_table_from_a_description_replays_the_indexes(pg_db: DB) -> None:
+    """An index name is per schema, so a copy in another schema keeps its names."""
+    _introspection_schema(pg_db)
+    pg_db.create_index("intro_users", "idx_intro_users_role").columns("role_id").execute()
+    pg_db.create_index("intro_users", "idx_intro_users_pair").columns(["name", "email"]).unique().execute()
+    pg_db.exec("DROP SCHEMA IF EXISTS reporting CASCADE")
+    pg_db.exec("CREATE SCHEMA reporting")
+
+    try:
+        for table in ["intro_roles", "intro_users"]:
+            description = pg_db.describe_table(table)
+            description.table = ["reporting", table]
+            description.create_table(pg_db)
+
+        original = pg_db.describe_table("intro_users")
+        copy = pg_db.describe_table(["reporting", "intro_users"])
+
+        assert copy.indexes == original.indexes
+
+        # And the flag leaves them out, without touching the description.
+        pg_db.describe_table("intro_users").create_table(pg_db, override_name="intro_users_bare", skip_indexes=True)
+        assert pg_db.describe_table("intro_users_bare").indexes == []
+    finally:
+        pg_db.exec("DROP SCHEMA IF EXISTS reporting CASCADE")
+        pg_db.exec('DROP TABLE IF EXISTS "intro_users_bare" CASCADE')
+        pg_db.exec('DROP TABLE IF EXISTS "intro_users" CASCADE')
+        pg_db.exec('DROP TABLE IF EXISTS "intro_roles" CASCADE')
+
+
 def test_postgres_create_table_from_a_description_skipping_constraints(pg_db: DB) -> None:
     """The two flags leave the constraints out; columns and the key stay."""
     _introspection_schema(pg_db)

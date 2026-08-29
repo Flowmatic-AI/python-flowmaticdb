@@ -5,6 +5,7 @@ from typing import TYPE_CHECKING, Any
 from flowmaticdb.query.ddl import (
     Column,
     ForeignKeyConstraint,
+    Index,
     TableConstraints,
     TableDescription,
     UniqueConstraint,
@@ -98,6 +99,38 @@ def parse_constraints(rows: list[dict[str, Any]]) -> TableConstraints:
     return constraints
 
 
+def parse_indexes(dialect: DialectABC, rows: list[dict[str, Any]]) -> list[Index]:
+    """Group the index rows into indexes, dropping the ones a CREATE INDEX cannot rebuild."""
+    indexes_by_id: dict[str, Index] = {}
+    dropped: set[str] = set()
+
+    for row in rows:
+        index_id = str(row["index_id"])
+        if index_id in dropped:
+            continue
+
+        # An expression key reports no column name, and a partial index carries a
+        # predicate the builders cannot express: replaying either would build a
+        # different index, so neither is described at all.
+        if row["column_name"] is None or dialect.parse_bool(row["is_partial"]):
+            dropped.add(index_id)
+            indexes_by_id.pop(index_id, None)
+            continue
+
+        index = indexes_by_id.get(index_id)
+        if index is None:
+            index = Index(
+                name=str(row["index_name"]),
+                columns=[],
+                unique=dialect.parse_bool(row["is_unique"]),
+            )
+            indexes_by_id[index_id] = index
+
+        index.columns.append(str(row["column_name"]))
+
+    return list(indexes_by_id.values())
+
+
 def parse_primary_keys(rows: list[dict[str, Any]]) -> list[str]:
     """Collect the primary key columns, in key order, from the constraint rows."""
     return [str(row["column_name"]) for row in rows if str(row["constraint_type"]) == "PRIMARY KEY"]
@@ -106,10 +139,12 @@ def parse_primary_keys(rows: list[dict[str, Any]]) -> list[str]:
 def describe_table(database: DatabaseABC, dialect: DialectABC, table: str | list[str]) -> TableDescription:
     column_rows = database.query_with_params(dialect.describe_table_columns(table)).fetch_dicts()
     constraint_rows = database.query_with_params(dialect.describe_table_constraints(table)).fetch_dicts()
+    index_rows = database.query_with_params(dialect.describe_table_indexes(table)).fetch_dicts()
 
     return TableDescription(
         table=table,
         columns=parse_columns(dialect, column_rows),
         primary_keys=parse_primary_keys(constraint_rows),
         constraints=parse_constraints(constraint_rows),
+        indexes=parse_indexes(dialect, index_rows),
     )
