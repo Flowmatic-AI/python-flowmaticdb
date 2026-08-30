@@ -196,9 +196,9 @@ def test_query_builder_select_integration() -> None:
     )
     adapter.query_with_params(dialect, qwp)
 
-    from flowmaticdb.database import Database
+    from flowmaticdb.database import DB
     from flowmaticdb.query import SelectQuery
-    db = Database(adapter, dialect)
+    db = DB(adapter, dialect)
     q = SelectQuery(dialect, "items", database=db)
     q.columns(["id", "name"])
     q.where_greater_than("id", 1)

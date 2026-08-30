@@ -2119,7 +2119,7 @@ Reading is unaffected — an array column always comes back as a plain `list`.
 ```
 ┌────────────────────────────────────────────────────┐
 │                   User Code                        │
-│   DB.connect_*() → Database → Query Builders      │
+│   DB.connect_*() → DB → Query Builders             │
 └──────────────────┬─────────────────────────────────┘
                    │
           ┌────────┴────────┐

@@ -16,7 +16,7 @@ import pytest
 
 from flowmaticdb._threading import ThreadLocalStore
 from flowmaticdb.adapters import AdapterABC, SQLiteAdapter
-from flowmaticdb.database import Database, DatabaseABC
+from flowmaticdb.database import DB, DatabaseABC
 from flowmaticdb.dialects import MySQLDialect, PostgresqlDialect, SQLiteDialect
 from flowmaticdb.result import Result, ResultABC
 
@@ -614,7 +614,7 @@ def test_sqlite_adapter_reconnect_reapplies_startup_queries(tmp_path: Path) -> N
 
 
 def test_database_reconnect_if_disconnected_is_a_noop_while_connected(tmp_path: Path) -> None:
-    db = Database.connect_sqlite(str(tmp_path / "live.sqlite"))
+    db = DB.connect_sqlite(str(tmp_path / "live.sqlite"))
     db.exec("CREATE TABLE t (val INTEGER)")
 
     assert db.is_connected() is True
@@ -626,7 +626,7 @@ def test_database_reconnect_if_disconnected_is_a_noop_while_connected(tmp_path: 
 
 
 def test_database_reconnect_if_disconnected_restores_a_dropped_connection(tmp_path: Path) -> None:
-    db = Database.connect_sqlite(str(tmp_path / "dropped.sqlite"))
+    db = DB.connect_sqlite(str(tmp_path / "dropped.sqlite"))
     db.exec("CREATE TABLE t (val INTEGER)")
     db.insert("t").values({"val": 7}).execute()
     db.close()
@@ -640,7 +640,7 @@ def test_database_reconnect_if_disconnected_restores_a_dropped_connection(tmp_pa
 
 def test_database_reconnect_clears_savepoint_bookkeeping() -> None:
     adapter = _RecordingAdapter()
-    db = Database(adapter, SQLiteDialect())
+    db = DB(adapter, SQLiteDialect())
 
     db.begin_transaction()
     db.begin_transaction("sp1")
