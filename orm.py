@@ -171,7 +171,7 @@ def connect(engine: str) -> DB:
     if engine == "mysql":
         return DB.connect_mysql("flowmaticdb", host="localhost", user="root", password="", debug_callback=debug_callback)
 
-    return DB.connect_sqlite("database.sqlite", debug_callback=debug_callback)
+    return DB.connect_sqlite(":memory:", debug_callback=debug_callback)
 
 
 def drop_schema(db: DB) -> None:

@@ -1550,6 +1550,11 @@ for description in descriptions:
 (SQLite cannot add a foreign key to an existing table at all, so there the order
 of the first loop is what has to be right.)
 
+`copy_from()` / `copy_to()`, below, automate exactly this recipe across an
+entire database. Reach for the recipe by hand only for what those do not cover
+— a copy that has to land beside its own source, where the constraint- and
+index-name collisions described below apply just the same.
+
 **Constraint names are replayed too.** That is what you want across databases
 and schemas, where the copy should keep the names the original had. Copying
 under a *different name in the same schema* is the case to watch: PostgreSQL and
@@ -1587,6 +1592,72 @@ description.create_table(db)
 ```
 
 Or leave the indexes out of the copy altogether with `skip_indexes=True`.
+
+### `copy_from()` / `copy_to()`
+
+```python
+db.copy_from(other_db)                      # pull every table of other_db into db
+db.copy_to(other_db)                        # push every table of db into other_db
+
+db.copy_from(other_db, include_data=False)  # schema only, no rows
+db.copy_from(other_db, row_batch_size=500)  # rows per INSERT, default 100
+```
+
+The automated form of the bulk-copy recipe above: every table `other_db`'s
+`list_tables()` returns (its own default schema) is `describe_table()`'d and
+rebuilt on `db` with `TableDescription.create_table()` — `copy_to()` is the
+same thing with source and destination swapped. Both return the total number
+of rows copied.
+
+Tables are visited in dependency order, not list order: a table is only built
+once every table its foreign keys reference already exists, for the same
+reason the recipe above builds foreign-key-free tables first. Each table is
+created and then **immediately filled** before the next one starts — schema
+and data land table by table, not schema-for-everything then data-for-everything.
+
+Two things never count as an edge in that ordering: a foreign key referencing
+its own table (unremarkable inside a single `CREATE TABLE`) and one referencing
+a table that takes no part in the copy — another schema, or simply a table
+that is not there — which is left out of the graph silently rather than
+raising.
+
+A **reference cycle** — two tables that point at each other — cannot be
+ordered at all, so the cycle is broken on one table rather than all of them:
+that one is built with `skip_foreign_key_constraints=True` and its keys are
+replayed afterwards with `ALTER TABLE ... ADD FOREIGN KEY`, which is enough to
+let the rest of the cycle build its own keys inline. A table that merely
+*follows* a cycle is in no cycle itself and keeps its keys too. SQLite cannot
+add a foreign key to a table that already exists, at all, so a cyclic schema
+raises `QueryError` there — this is a hard engine limit, not a bug to route
+around, and the recipe above run by hand (getting the single `CREATE TABLE`
+loop's order right yourself) is the only way to land such a schema on SQLite.
+Only the one broken table needs that treatment, so a schema whose cycle sits
+away from the tables you care about still copies as far as the cycle.
+
+`include_data=False` builds the schema only and returns `0` — nothing is read
+from the source tables at all.
+
+`row_batch_size` is how many rows go into one multi-row `INSERT`. Rows are
+streamed off the source one at a time rather than being read into memory
+whole, so a large table costs one buffered batch, not the table. A value below
+`1` raises `DatabaseError`.
+
+Each table is still built by `TableDescription.create_table()`, so every
+caveat that section documents applies here too: constraint and index names are
+replayed as declared, which is why `copy_from()` / `copy_to()` are for moving a
+database into *another* database or schema, not for duplicating one beside
+itself — the same name collisions described above apply; a width the engine
+never stored comes back as the engine's own; and a SQLite foreign key is
+rebuilt unnamed.
+
+No transaction wraps the copy. DDL does not roll back on every engine, so a
+copy that fails partway through leaves whatever tables it had already built
+and filled.
+
+`Table` also has methods named `copy_from()` / `copy_to()`
+(`table.copy_from(other_table)`) — those move the rows of one already-existing
+table between two `Table`s and know nothing about schema or dependency order.
+They share a name with the methods here and nothing else.
 
 ---
 

@@ -225,6 +225,16 @@ class DatabaseABC:
         from flowmaticdb.database._table import Table
         return Table(self, self._dialect, table)
 
+    def copy_from(self, source: DatabaseABC, include_data: bool = True, row_batch_size: int = 100) -> int:
+        """Copy every table from source into this database."""
+        from flowmaticdb.database._copy import copy_database
+        return copy_database(source, self, include_data, row_batch_size)
+
+    def copy_to(self, destination: DatabaseABC, include_data: bool = True, row_batch_size: int = 100) -> int:
+        """Copy every table from this database into destination."""
+        from flowmaticdb.database._copy import copy_database
+        return copy_database(self, destination, include_data, row_batch_size)
+
     def close(self) -> None:
         self.adapter.close()
     
