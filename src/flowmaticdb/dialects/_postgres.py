@@ -11,7 +11,7 @@ from flowmaticdb.dialects._sql_dialect import SQLDialect
 from flowmaticdb.query import Condition, OnConflict
 from flowmaticdb.query.ddl import Column
 from flowmaticdb.query.enums import ConditionEnum, TypeEnum
-from flowmaticdb.query.expressions import PostgresArray
+from flowmaticdb.query.expressions import PostgresArray, Raw, SqlABC
 
 _TZ_OFFSET_RE = re.compile(r"([+-]\d{2})$")
 
@@ -275,3 +275,14 @@ class PostgresqlDialect(SQLDialect):
         if type_enum == TypeEnum.JSON and self.jsonb:
             return "JSONB"
         return super().type(type_enum, size)
+
+    def current_timestamp_precise(self) -> SqlABC:
+        # clock_timestamp() rather than CURRENT_TIMESTAMP, which is the
+        # transaction's start time. Publishing is a single autocommit statement
+        # so the two coincide today, but the read side is what matters: a poller
+        # must not measure its window from when its transaction opened.
+        return Raw("clock_timestamp()")
+
+    def timestamp_minus_milliseconds(self, milliseconds: int) -> SqlABC:
+        return Raw(f"(clock_timestamp() - INTERVAL '{int(milliseconds)} milliseconds')")
+

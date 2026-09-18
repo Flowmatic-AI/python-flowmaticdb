@@ -4,6 +4,7 @@ from flowmaticdb._exceptions import (
     DatabaseError,
     DriverError,
     ModelError,
+    PubSubError,
     QueryError,
     QueryWithParamsError,
 )
@@ -30,6 +31,7 @@ __all__ = [
     "DriverError",
     "ModelError",
     "PostgresArray",
+    "PubSubError",
     "QueryError",
     "QueryWithParams",
     "QueryWithParamsError",

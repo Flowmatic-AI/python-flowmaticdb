@@ -149,9 +149,7 @@ class PsycopgAdapter(AdapterABC):
     def connection_count(self) -> int:
         return self._connections.count()
 
-    def _connect(self) -> None:
-        import psycopg
-
+    def _connect_options(self) -> dict[str, Any]:
         connect_options: dict[str, Any] = {
             "host": self._host,
             "port": self._port,
@@ -183,13 +181,32 @@ class PsycopgAdapter(AdapterABC):
         if search_path:
             connect_options["options"] = f"-c search_path={search_path}"
 
+        return connect_options
+
+    def _connect(self) -> None:
+        import psycopg
+
         # The slot is claimed before the handle is opened -- opening first and
         # counting after is exactly what the limit exists to prevent.
         with self._connections.reserve():
-            self._connections.set(psycopg.connect(**connect_options))
+            self._connections.set(psycopg.connect(**self._connect_options()))
             self._closed = False
 
         self._exec_startup_queries()
+
+    def open_listener_connection(self) -> Connection[TupleRow]:
+        """Open a connection outside the thread-local pool, for LISTEN.
+
+        A listener cannot borrow a thread's connection: connections here belong
+        to the thread that opened them and are closed when it exits, which would
+        silently end the subscription. This handle belongs to its caller, which
+        is responsible for closing it, and deliberately does not claim a slot
+        against ``max_concurrent_connections`` -- the cap governs the query pool,
+        and a listener blocking on it would deadlock a saturated pool."""
+        import psycopg
+
+        connection: Connection[TupleRow] = psycopg.connect(**self._connect_options())
+        return connection
 
     def _disconnect(self) -> None:
         connection = self._connections.discard()
@@ -437,9 +454,7 @@ class AsyncpgAdapter(AdapterABC):
 
         return context
 
-    def _connect(self) -> None:
-        self._ensure_loop()
-
+    def _connect_options(self) -> dict[str, Any]:
         connect_options: dict[str, Any] = {
             "host": self._host,
             "port": self._port,
@@ -456,13 +471,45 @@ class AsyncpgAdapter(AdapterABC):
         if search_path:
             connect_options["server_settings"] = {"search_path": search_path}
 
+        return connect_options
+
+    def _connect(self) -> None:
+        self._ensure_loop()
+
         # The slot is claimed before the handle is opened -- opening first and
         # counting after is exactly what the limit exists to prevent.
         with self._connections.reserve():
-            self._connections.set(self._await(self._open(connect_options)))
+            self._connections.set(self._await(self._open(self._connect_options())))
             self._closed = False
 
         self._exec_startup_queries()
+
+    def open_listener_connection(self) -> AsyncpgConnection:
+        """Open a connection on this adapter's loop, outside the pool, for LISTEN.
+
+        asyncpg binds a connection to the loop that created it, so a listener
+        has to live on the adapter's own loop thread -- which is also where its
+        notification callbacks will fire. See :meth:`PsycopgAdapter.open_listener_connection`
+        for why this sits outside ``max_concurrent_connections``.
+
+        Close it with :meth:`close_listener_connection`, not ``connection.close()``,
+        which is a coroutine that only the loop thread can await."""
+        self._ensure_loop()
+        return self._await(self._open(self._connect_options()))
+
+    def close_listener_connection(self, connection: AsyncpgConnection) -> None:
+        if self._loop.is_closed():
+            return
+        self._await(connection.close())
+
+    def run_on_loop(self, coroutine: Coroutine[Any, Any, T]) -> T:
+        """Await a coroutine on this adapter's loop from a synchronous caller.
+
+        Public counterpart of the private ``_await``: a listener has to drive
+        asyncpg's own coroutines (``add_listener``/``remove_listener``) on the
+        loop its connection belongs to."""
+        self._ensure_loop()
+        return self._await(coroutine)
 
     async def _open(self, connect_options: dict[str, Any]) -> AsyncpgConnection:
         import asyncpg
