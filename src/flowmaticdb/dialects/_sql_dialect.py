@@ -3,8 +3,9 @@ from __future__ import annotations
 import re
 import sys
 from collections.abc import Mapping
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime, time
 from typing import Any, ClassVar
+from uuid import UUID
 
 from flowmaticdb import QueryError
 from flowmaticdb._json import decode_json, encode_json
@@ -1040,6 +1041,10 @@ class SQLDialect(DialectABC):
             return self.escape_string(value)
         if isinstance(value, datetime):
             return self.escape_string(self.cast_datetime(value))
+        if isinstance(value, (date, time)):
+            return self.escape_string(value.isoformat())
+        if isinstance(value, UUID):
+            return self.escape_string(str(value))
         if isinstance(value, PostgresArray):
             return self.escape_string(self.cast_json(value.values))
         if isinstance(value, (dict, list)):
