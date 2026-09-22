@@ -9,6 +9,7 @@ from flowmaticdb.query.enums import ChainEnum, ConditionEnum
 
 if TYPE_CHECKING:
     from flowmaticdb.query._select import SelectQuery
+    from flowmaticdb.query.expressions import SqlABC
 
 
 def _escape_like_chars(string: str, escape_backslash: bool = False) -> str:
@@ -124,10 +125,10 @@ class ConditionMixin:
             self._add_condition_group(conditions, group)
         return group
 
-    def _operator(self, conditions: list[Condition | ConditionGroupABC], column: str | list[str] | None, operator: str, value: Any, chain: ChainEnum = ChainEnum.AND) -> Condition:
+    def _operator(self, conditions: list[Condition | ConditionGroupABC], column: str | list[str] | SqlABC | None, operator: str, value: Any, chain: ChainEnum = ChainEnum.AND) -> Condition:
         return self._add_condition(conditions, operator, column, value, chain)
 
-    def _add_condition(self, conditions: list[Condition | ConditionGroupABC], condition: Any, identifier: str | list[str] | None, value: Any, chain: ChainEnum = ChainEnum.AND, cast: bool = False, case_insensitive: bool = False, flags: Any = None) -> Condition:
+    def _add_condition(self, conditions: list[Condition | ConditionGroupABC], condition: Any, identifier: str | list[str] | SqlABC | None, value: Any, chain: ChainEnum = ChainEnum.AND, cast: bool = False, case_insensitive: bool = False, flags: Any = None) -> Condition:
         cond = Condition(condition=condition, identifier=identifier, value=value, chain=chain, cast=cast, case_insensitive=case_insensitive, flags=flags)
         conditions.append(cond)
         return cond

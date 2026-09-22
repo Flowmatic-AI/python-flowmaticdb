@@ -1,15 +1,18 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from flowmaticdb.query.enums import ChainEnum, ConditionEnum
+
+if TYPE_CHECKING:
+    from flowmaticdb.query.expressions import SqlABC
 
 
 @dataclass
 class Condition:
     condition: ConditionEnum | str
-    identifier: str | list[str] | None = None
+    identifier: str | list[str] | SqlABC | None = None
     value: Any = None
     chain: ChainEnum = ChainEnum.AND
     cast: bool = False

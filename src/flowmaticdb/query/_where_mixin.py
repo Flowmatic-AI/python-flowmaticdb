@@ -10,6 +10,7 @@ from flowmaticdb.query.enums import ChainEnum
 
 if TYPE_CHECKING:
     from flowmaticdb.query._select import SelectQuery
+    from flowmaticdb.query.expressions import SqlABC
 
 
 class WhereMixin(ConditionMixin):
@@ -239,11 +240,11 @@ class WhereMixin(ConditionMixin):
         self._group(self.where, callback, not_=True, group_class=WhereGroup, chain=ChainEnum.OR)
         return self
 
-    def where_operator(self, column: str | list[str], operator: str, value: Any) -> Self:
+    def where_operator(self, column: str | list[str] | SqlABC, operator: str, value: Any) -> Self:
         self._operator(self.where, column, operator, value)
         return self
 
-    def or_where_operator(self, column: str | list[str], operator: str, value: Any) -> Self:
+    def or_where_operator(self, column: str | list[str] | SqlABC, operator: str, value: Any) -> Self:
         self._operator(self.where, column, operator, value, chain=ChainEnum.OR)
         return self
 

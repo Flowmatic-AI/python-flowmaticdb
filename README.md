@@ -741,6 +741,8 @@ sub = db.select("orders").columns(["user_id"])
 .where_operator("json_data", "@>", '{"vip": true}')
 ```
 
+`where_operator()` / `having_operator()` escape the column like every other condition method (a `["table", "column"]` list is qualified), and bind the value. Pass `raw("...")` as the column to put an expression there unescaped. The operator itself is written into the SQL verbatim, so never take it from user input.
+
 ---
 
 ## HAVING Conditions

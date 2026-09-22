@@ -289,7 +289,8 @@ class SQLDialect(DialectABC):
         if isinstance(cond.condition, ConditionEnum):
             condition_type = cond.condition
         else:
-            query.append(f"{cond.identifier} {cond.condition} ")
+            query.append(self._escape_or_sql(cond.identifier))
+            query.append(f" {cond.condition} ")
             self._build_question_marks(query, params, cond.value)
             return
 

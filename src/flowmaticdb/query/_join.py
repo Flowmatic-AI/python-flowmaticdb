@@ -247,11 +247,11 @@ class Join(ConditionMixin):
         self._group(self.conditions, callback, not_=True, group_class=WhereGroup, chain=ChainEnum.OR)
         return self
 
-    def where_operator(self, column: str | list[str], operator: str, value: Any) -> Self:
+    def where_operator(self, column: str | list[str] | SqlABC, operator: str, value: Any) -> Self:
         self._operator(self.conditions, column, operator, value)
         return self
 
-    def or_where_operator(self, column: str | list[str], operator: str, value: Any) -> Self:
+    def or_where_operator(self, column: str | list[str] | SqlABC, operator: str, value: Any) -> Self:
         self._operator(self.conditions, column, operator, value, chain=ChainEnum.OR)
         return self
 
