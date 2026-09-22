@@ -9,6 +9,7 @@ from flowmaticdb.query.enums import OrderByDirectionEnum
 
 if TYPE_CHECKING:
     from flowmaticdb.query._select import SelectQuery
+    from flowmaticdb.query.expressions import SqlABC
 
 
 class ColumnsMixin:
@@ -53,13 +54,13 @@ class GroupByMixin:
 class OrderByMixin:
     _order_by_list: list[OrderBy] | None
 
-    def order_by_asc(self, column: str) -> Self:
+    def order_by_asc(self, column: str | list[str] | SqlABC) -> Self:
         if self._order_by_list is None:
             self._order_by_list = []
         self._order_by_list.append(OrderBy(column=column, direction=OrderByDirectionEnum.ASC))
         return self
 
-    def order_by_desc(self, column: str) -> Self:
+    def order_by_desc(self, column: str | list[str] | SqlABC) -> Self:
         if self._order_by_list is None:
             self._order_by_list = []
         self._order_by_list.append(OrderBy(column=column, direction=OrderByDirectionEnum.DESC))
