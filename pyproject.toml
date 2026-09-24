@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "flowmaticdb"
-version = "4.0.3"
+version = "4.1.0"
 description = "A Python database abstraction layer (+ORM) supporting PostgreSQL, SQLite, MySQL and MariaDB."
 readme = "README.md"
 requires-python = ">=3.11"
