@@ -239,22 +239,5 @@ class DialectABC(ABC):
     def parse_default(self, default_expression: str, type_enum: TypeEnum | str) -> Any:
         ...
 
-    @abstractmethod
-    def current_timestamp_precise(self) -> SqlABC:
-        """The server clock at sub-second resolution.
-
-        Distinct from ``CURRENT_TIMESTAMP``, which truncates to whole seconds on
-        SQLite and MySQL. The pubsub outbox needs better than that: its grace
-        window is measured in tens of milliseconds, and a one-second clock would
-        make the window meaningless."""
-
-    @abstractmethod
-    def timestamp_minus_milliseconds(self, milliseconds: int) -> SqlABC:
-        """The server clock, ``milliseconds`` ago, at the same resolution.
-
-        Read side of the same pair -- it has to come from the database rather
-        than from Python, or clock skew between application servers reintroduces
-        the very row-skipping the grace window is there to prevent."""
-
     def parse_column_type(self, sql_type: str, auto_increment: bool) -> tuple[TypeEnum | str, int | None]:
         return self.parse_type(sql_type)

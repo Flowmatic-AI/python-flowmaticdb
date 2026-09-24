@@ -308,10 +308,3 @@ class MySQLDialect(SQLDialect):
                 return "DATETIME"
             return f"DATETIME({min(width, 6)})"
         return super().type(type_enum, size)
-
-    def current_timestamp_precise(self) -> SqlABC:
-        return Raw("NOW(6)")
-
-    def timestamp_minus_milliseconds(self, milliseconds: int) -> SqlABC:
-        return Raw(f"(NOW(6) - INTERVAL {int(milliseconds) * 1000} MICROSECOND)")
-

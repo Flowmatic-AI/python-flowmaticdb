@@ -1200,15 +1200,3 @@ class SQLDialect(DialectABC):
             TypeEnum.JSON: "JSON" if self.json else "TEXT",
         }
         return mapping.get(type_enum, f"VARCHAR({size or 255})")
-
-    def current_timestamp_precise(self) -> SqlABC:
-        # CURRENT_TIMESTAMP truncates to whole seconds here, so the clock is
-        # read through strftime instead. The format has no %s in it, so the
-        # adapters' placeholder rewriting leaves it alone -- and it is inside a
-        # quoted string, which REGEX_PATTERN skips anyway.
-        return Raw("strftime('%Y-%m-%d %H:%M:%f', 'now')")
-
-    def timestamp_minus_milliseconds(self, milliseconds: int) -> SqlABC:
-        seconds = int(milliseconds) / 1000
-        return Raw(f"strftime('%Y-%m-%d %H:%M:%f', 'now', '-{seconds:.3f} seconds')")
-

@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import threading
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Any, Self, TypeVar
 
@@ -22,7 +21,6 @@ if TYPE_CHECKING:
         SelectModelQuery,
         UpdateModelQuery,
     )
-    from flowmaticdb.pubsub import PubSubABC, PubSubBackendEnum
     from flowmaticdb.query import (
         AlterTableQuery,
         CreateIndexQuery,
@@ -44,8 +42,6 @@ class DatabaseABC:
         self._dialect = dialect
         self._ensure_always_connected = ensure_always_connected
         self._savepoint_stacks: ThreadLocalStore[list[str]] = ThreadLocalStore()
-        self._pubsub: PubSubABC | None = None
-        self._pubsub_lock = threading.Lock()
 
     @property
     def _savepoints(self) -> list[str]:
@@ -229,92 +225,6 @@ class DatabaseABC:
         from flowmaticdb.database._table import Table
         return Table(self, self._dialect, table)
 
-    @property
-    def pubsub(self) -> PubSubABC:
-        """Publish/subscribe over this database, built once and cached.
-
-        A property rather than a method on purpose. Returning a fresh instance
-        per call would invite two unconnected brokers in one process --
-        ``db.pubsub().publish(...)`` into one and ``db.pubsub().subscribe(...)``
-        on another, with no error and no delivery. PubSub owns threads, a
-        connection and a subscription registry and has to be closed, which makes
-        it a collaborator of the database like ``adapter`` and ``dialect``, not a
-        builder like ``select()``.
-
-        Building is cheap: no thread starts and no connection opens until the
-        first :meth:`subscribe`. On the polling backend the outbox table still
-        has to be created explicitly with ``init()``, as migrations are."""
-        if self._pubsub is not None:
-            return self._pubsub
-
-        # Connections here are thread-local, so two request threads touching
-        # this for the first time at once is ordinary rather than exotic --
-        # unguarded, it would build two instances and cause the very split this
-        # property exists to prevent.
-        with self._pubsub_lock:
-            if self._pubsub is None:
-                self._pubsub = self._create_pubsub()
-
-            return self._pubsub
-
-    def _create_pubsub(self) -> PubSubABC:
-        from flowmaticdb.pubsub import MemoryPubSub, PollingPubSub, PostgresPubSub, PubSubBackendEnum
-
-        backend = self._pubsub_backend()
-        max_queued_messages = int(self._dialect.option("pubsub_max_queued_messages", 1000))
-
-        if backend is PubSubBackendEnum.POSTGRES:
-            return PostgresPubSub(
-                self,
-                reconnect_interval=float(self._dialect.option("pubsub_reconnect_interval", 1.0)),
-                max_queued_messages=max_queued_messages,
-            )
-
-        if backend is PubSubBackendEnum.MEMORY:
-            return MemoryPubSub(max_queued_messages=max_queued_messages)
-
-        return PollingPubSub(
-            self,
-            table=str(self._dialect.option("pubsub_table", "pubsub_messages")),
-            poll_interval=float(self._dialect.option("pubsub_poll_interval", 0.1)),
-            grace_milliseconds=int(self._dialect.option("pubsub_grace_milliseconds", 50)),
-            retention_milliseconds=int(self._dialect.option("pubsub_retention_milliseconds", 300_000)),
-            run_janitor=bool(self._dialect.option("pubsub_run_janitor", True)),
-            janitor_interval=float(self._dialect.option("pubsub_janitor_interval", 30.0)),
-            max_queued_messages=max_queued_messages,
-        )
-
-    def _pubsub_backend(self) -> PubSubBackendEnum:
-        """The configured backend, or the one this dialect implies."""
-        from flowmaticdb import PubSubError
-        from flowmaticdb.dialects import PostgresqlDialect, SQLiteDialect
-        from flowmaticdb.pubsub import PubSubBackendEnum
-
-        configured = self._dialect.option("pubsub_backend")
-
-        if configured is not None:
-            try:
-                return PubSubBackendEnum(configured)
-            except ValueError:
-                # A misspelled backend has to be refused here. Falling back to
-                # the default would hand back a working object that delivers
-                # somewhere other than where it was asked to.
-                valid = ", ".join(member.value for member in PubSubBackendEnum)
-                raise PubSubError(f"unknown pubsub_backend {configured!r}; valid values are {valid}") from None
-
-        if isinstance(self._dialect, PostgresqlDialect):
-            return PubSubBackendEnum.POSTGRES
-
-        if isinstance(self._dialect, SQLiteDialect):
-            return PubSubBackendEnum.MEMORY
-
-        # MySQL/MariaDB, and any dialect this library has never seen: polling is
-        # the only mechanism that works between processes without native push,
-        # and it fails loudly rather than quietly when a dialect cannot express
-        # its SQL. A custom dialect that wants the in-process broker instead
-        # asks for it by name.
-        return PubSubBackendEnum.POLLING
-
     def copy_from(self, source: DatabaseABC, include_data: bool = True, row_batch_size: int = 100) -> int:
         """Copy every table from source into this database."""
         from flowmaticdb.database._copy import copy_database
@@ -326,16 +236,6 @@ class DatabaseABC:
         return copy_database(self, destination, include_data, row_batch_size)
 
     def close(self) -> None:
-        # Threads and a dedicated listener connection outliving the database
-        # that owns them is exactly the leak the pubsub property's ownership
-        # claim obliges this to handle.
-        with self._pubsub_lock:
-            pubsub = self._pubsub
-            self._pubsub = None
-
-        if pubsub is not None:
-            pubsub.close()
-
         self.adapter.close()
     
     def is_connected(self) -> bool:

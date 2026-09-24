@@ -21,6 +21,3 @@ class QueryWithParamsError(Exception):
 
 class ModelError(Exception):
     pass
-
-class PubSubError(Exception):
-    pass
